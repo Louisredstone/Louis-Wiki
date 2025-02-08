@@ -7,11 +7,23 @@ import { suggester } from './gui/suggester';
 interface LouisWikiPluginSettings {
 	wikiFolder: string|null;
 	tagAliasEnabled: boolean;
+	entryTemplate: string;
 }
 
 const DEFAULT_SETTINGS: LouisWikiPluginSettings = {
-	wikiFolder: null,
-	tagAliasEnabled: false
+	wikiFolder: 'Wiki',
+	tagAliasEnabled: false,
+	entryTemplate: `
+#施工中
+
+{{title}}
+
+#相关链接
+\`\`\`dataviewjs
+dv.list(dv.pages('#'+dv.current().file.frontmatter['wiki-tag']).map(n => n.file.link))
+\`\`\`
+
+`
 }
 
 export default class LouisWikiPlugin extends Plugin {
@@ -81,7 +93,7 @@ export default class LouisWikiPlugin extends Plugin {
 			log('Please set the wiki folder in the settings.');
 			return;
 		}
-		this.wikiLibrary = new WikiLibrary(this.app, this.settings.wikiFolder!);
+		this.wikiLibrary = new WikiLibrary(this.app, this.settings.wikiFolder!, this.settings.entryTemplate);
 	}
 
 	async Command_CreateNewWikiEntry(){
@@ -91,31 +103,39 @@ export default class LouisWikiPlugin extends Plugin {
 		// choose folder
         // create new file
 		if (!this.wikiLibrary) error('Wiki library not initialized.');
-		const str = await inputPrompt('Create new wiki entry', 'Name, alias1, alias2, #tag1, #tag2', 'Only Name is required, other fields are optional.\nName can be en/zh/abbr.\nName will become the wiki-tag.\n aliases and tags will be processed automatically.')
+		const userInput = await inputPrompt('Create new wiki entry', '', 'Only Name is required, other fields are optional.<br>Name can be en/zh/abbr.<br>Name will become the wiki-tag.<br> Aliases and tags will be processed automatically.', 'Name, alias1, alias2, #tag1, #tag2, //description')
 		// e.g.:
 		// 通用人工智能 (Artificial General Intelligence, AGI)
 		// QuickAdd, 快加 (QA): Obsidian插件
-		if (str == null) {
+		if (userInput == null) {
 			console.log("Operation canceled by user.");
 			log("Operation canceled by user.", 5);
 			return;
 		}
 
 		// # parse wiki input
-		function parse_wiki_input(str: string){
+		function parse_wiki_input(userInput: string){
 			console.log("parse wiki input");
-			const parts: string[] = str.split(/[:：]/);
+			const parts: string[] = userInput.split(/\/\//);
 			// #FIXME: need to change the grammar here.
 			// it is still old code.
 			
 			var chineseNames: string[] = [];
 			var englishNames: string[] = [];
 			var abbrNames: string[] = [];
-			var descriptions: string[] = [];
+			var description: string = "";
 		
 			const firstPart: string = parts[0];
-			const entities: string[] = firstPart.split(/[（\(,，\)）]/).map(part => part.trim()).filter(part => part !== '');
-			const namesWithType: string[][] = entities.map(entity => {
+			if (parts.length>1){
+				description= parts[1];
+			}
+			
+			const entities: string[] = firstPart.replace(/\s*([,，]\s*)*[,，]?(#[^\s\~\`\!\@\#\$\%\^\&\*\(\)]+)\s*([,，]\s*)*[,，]?/g, (match, p1, p2, p3)=>","+p2+",").split(/[,，]/).map(part => part.trim()).filter(part => part!== '');
+			
+			const tags: string[] = entities.filter(entity => entity.startsWith('#')).map(entity => entity.slice(1));
+			const names: string[] = entities.filter(entity =>!entity.startsWith('#'));
+
+			const namesWithType: string[][] = names.map(entity => {
 				if (/[^\x00-\x7F]+/.test(entity)) { // isChinese
 					chineseNames.push(entity);
 					return [entity, 'chinese-name'];
@@ -128,14 +148,13 @@ export default class LouisWikiPlugin extends Plugin {
 				}
 			});
 			// Note that namesWithType is an array of [name, type] pairs.
-			if (parts.length > 1) {
-				descriptions = parts.slice(1).join(',').split(',').map(item => item.trim()).filter(item => item!== '');
-			}
 			return {
 				chineseNames: chineseNames,
 				englishNames: englishNames,
 				abbrNames: abbrNames,
-				descriptions: descriptions,
+				aliases: names,
+				tags: tags,
+				description: description,
 				namesWithType: namesWithType
 			}
 		}
@@ -143,53 +162,53 @@ export default class LouisWikiPlugin extends Plugin {
 		const {
 			chineseNames,
 			englishNames,
-			abbrNames: abbrNames, 
-			descriptions, 
+			abbrNames,
+			aliases,
+			tags,
+			description, 
 			namesWithType: namesWithType
-		} = parse_wiki_input(str);
+		} = parse_wiki_input(userInput);
 
 		// # decide title and wiki-tag
-		function generate_wiki_title_and_wikiTag(namesWithType: string[][], descriptions: string[]=[]){
+		function generate_wiki_title_and_wikiTag(namesWithType: string[][]){
 			// # generate wiki title and wiki-tag
 			console.log("generate wiki title and wiki-tag");
-			var titleItems: string[] = [];
-			// A title can be composed of multiple items, such as:
+			var titleEntities: string[] = [];
+			// A title can be composed of multiple entities, such as:
 			// AI (Artificial Intelligence, 人工智能)
-			// At most three items, one for zh/en/abbr each.
-			// The sequence of items is determined by the order of appearance in the input string.
+			// At most three entities, one for zh/en/abbr each.
+			// The sequence of entities is determined by the order of appearance in the input string.
 			var flag_chinese: boolean = false;
 			var flag_english: boolean = false;
 			var flag_abbreviation: boolean = false;
 			for (var [entity, type] of namesWithType){
 				if (type === 'abbreviation' && !flag_abbreviation){
-					titleItems.push(entity);
+					titleEntities.push(entity);
 					flag_abbreviation = true;
 				} else if (type === 'chinese-name' && !flag_chinese) {
-					titleItems.push(entity);
+					titleEntities.push(entity);
 					flag_chinese = true;
 				} else if (type === 'english-name' && !flag_english) {
-					titleItems.push(entity);
+					titleEntities.push(entity);
 					flag_english = true;
 				}
 			}
-			var title: string = titleItems[0];
-			if (titleItems.length > 1) title += ' ('+titleItems.slice(1).join(', ') +')';
-			if (descriptions.length > 0) title += ' ('+descriptions[0]+')';
-			var wiki_tag: string = convert_to_legal_tag(titleItems[0]);
-			return { title: title, wiki_tag: wiki_tag, allEntities: namesWithType,  titleEntities: titleItems };
+			var title: string = titleEntities[0];
+			if (titleEntities.length > 1) title += ' ('+titleEntities.slice(1).join(', ') +')';
+			var wiki_tag: string = convert_to_legal_tag(titleEntities[0]);
+			return { title: title, wiki_tag: wiki_tag,  titleEntities };
 		}
 
 		const {
 			title, 
 			wiki_tag,
-			allEntities,
 			titleEntities
-		} = generate_wiki_title_and_wikiTag(namesWithType, descriptions);
+		} = generate_wiki_title_and_wikiTag(namesWithType);
 
 		const folders = this.wikiLibrary.folders;
-		const chosenFolder: TFolder = await suggester(this.app, folders.map(folder => folder.path), folders)
+		const chosenFolder: TFolder = await suggester(this.app, folders.map(folder => folder.path), folders) // TODO: create new folder if necessary.
 
-		this.wikiLibrary.addNewEntry(chosenFolder, title, aliases, tags);
+		this.wikiLibrary.addNewEntry(chosenFolder, title, wiki_tag, aliases, tags, description, titleEntities);
 	}
 
 	async Command_CreateNewDisambiguationWikiEntry(){
@@ -227,10 +246,10 @@ class SampleSettingTab extends PluginSettingTab {
 		containerEl.empty();
 
 		new Setting(containerEl)
-			.setName('Setting #1')
-			.setDesc('It\'s a secret')
+			.setName('Wiki Folder')
+			.setDesc('The folder where your wiki entries are stored.')
 			.addText(text => text
-				.setPlaceholder('Enter your secret')
+				.setPlaceholder('/path/to/wiki/folder')
 				.setValue(this.plugin.settings.wikiFolder || '')
 				.onChange(async (value) => {
 					this.plugin.settings.wikiFolder = value;
