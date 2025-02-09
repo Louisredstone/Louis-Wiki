@@ -1,7 +1,7 @@
 // add new wiki entry
 // update wiki library
 
-import { App, Vault, TFolder, TFile, Modal, ButtonComponent, stringifyYaml } from 'obsidian';
+import { App, Vault, TFolder, TFile, Modal, ButtonComponent, stringifyYaml, CachedMetadata } from 'obsidian';
 import {log, error, basename, open_file, open_file_by_path, get_sub_folders} from './utils';
 import { yesNoPrompt } from './gui/yesNoPrompt';
 import { suggester } from './gui/suggester';
@@ -16,6 +16,11 @@ interface FileInfo{
     description: string;
 }
 
+interface TFileWithMetadata{
+    file: TFile;
+    metadata: CachedMetadata|null;
+}
+
 interface WikiLibrarySummary{
     updated_at: number;
     "duplicated-wiki-tags": {
@@ -28,15 +33,18 @@ interface WikiLibrarySummary{
         [path: string]: FileInfo
     }
 }
-    
+
 
 export class WikiLibrary{
     app: App;
     rootFolderPath: string;
     rootFolder: TFolder;
     summary: WikiLibrarySummary;
-    summaryTFile: TFile;
+    // summaryTFile: TFile;
     folders: TFolder[];
+    entries: TFileWithMetadata[];
+    categories: TFileWithMetadata[];
+    otherNotes: TFileWithMetadata[];
     entryTemplate: string;
 
     constructor(app: App, rootFolder: string, entryTemplate: string) {
@@ -44,36 +52,77 @@ export class WikiLibrary{
         this.rootFolderPath = rootFolder;
         this.entryTemplate = entryTemplate;
         this.init_folders();
+        this.init_files();
         this.init_wiki_summary();
     }
 
     async init_folders(): Promise<void> {
+        var folders: TFolder[] = [];
         const tFolder = this.app.vault.getFolderByPath(this.rootFolderPath);
         if (!tFolder) {
             console.log("wiki folder not found, creating one...")
             const newRoot = await this.app.vault.createFolder(this.rootFolderPath);
             this.rootFolder = newRoot;
-            this.folders = [newRoot];
+            folders = [newRoot];
         }
-        this.rootFolder = tFolder!;
-        var folders: TFolder[] = [];
-        Vault.recurseChildren(tFolder!, (tAbstractFile)=>{
-            if (tAbstractFile instanceof TFolder)
-                folders.push(tAbstractFile);
-        });
+        else{
+            this.rootFolder = tFolder!;
+            
+            Vault.recurseChildren(tFolder!, (tAbstractFile)=>{
+                if (tAbstractFile instanceof TFolder)
+                    folders.push(tAbstractFile);
+            });
+        }
         this.folders = folders;
     }
 
-    async init_wiki_summary(): Promise<void> {
-        const summaryPath = this.rootFolderPath + '/wiki-summary.json';
-        const summaryTFile = this.app.vault.getFileByPath(summaryPath);
-        if (!summaryTFile) {
-            console.error("wiki summary file not found");
-            log("ERROR: wiki summary file not found. Please run 'Update Wiki' command first.");
-            return;
+    async init_files(): Promise<void> {
+        const files: TFileWithMetadata[] = [];
+        Vault.recurseChildren(this.rootFolder, (tAbstractFile)=>{
+            if (tAbstractFile instanceof TFile && tAbstractFile.extension ==='md')
+            {
+                const metadata = this.app.metadataCache.getFileCache(tAbstractFile);
+                files.push({file: tAbstractFile, metadata: metadata});
+            }
+        });
+        const entries: TFileWithMetadata[] = [];
+        const categories: TFileWithMetadata[] = [];
+        const otherFiles: TFileWithMetadata[] = [];
+        for (const file of files) {
+            const metadata = file.metadata;
+            if (!metadata) {
+                otherFiles.push(file);
+                continue;
+            }
+            const frontmatter = metadata.frontmatter;
+            if (!frontmatter) {
+                otherFiles.push(file);
+                continue;
+            }
+            if (frontmatter['note-type'] === 'wiki') {
+                entries.push(file);
+            } else if (frontmatter['note-type'] === 'category') {
+                categories.push(file);
+            } else {
+                otherFiles.push(file);
+            }
         }
-        this.summary = JSON.parse(await this.app.vault.read(summaryTFile));
-        this.summaryTFile = summaryTFile;
+        this.entries = entries;
+        this.categories = categories;
+        this.otherNotes = otherFiles;
+    }
+
+    async init_wiki_summary(): Promise<void> {
+        // const summaryPath = this.rootFolderPath + '/wiki-summary.json';
+        // const summaryTFile = this.app.vault.getFileByPath(summaryPath);
+        // if (!summaryTFile) {
+        //     console.error("wiki summary file not found");
+        //     log("ERROR: wiki summary file not found. Please run 'Update Wiki' command first.");
+        //     return;
+        // }
+        // this.summary = JSON.parse(await this.app.vault.read(summaryTFile));
+        // this.summaryTFile = summaryTFile;
+        // TODO: load summary by analyzing this.entries and this.categories
     }
 
     async addNewEntry(folder: string|TFolder, title: string, wiki_tag: string, aliases: string[], tags: string[], description: string, titleItems: string[]): Promise<void> {
@@ -145,7 +194,7 @@ export class WikiLibrary{
         }
         this.summary['files'][newNoteFilePath] = frontmatter;
         this.summary.updated_at = new Date().getTime();
-        this.app.vault.modify(this.summaryTFile, JSON.stringify(this.summary, null, 2));
+        // this.app.vault.modify(this.summaryTFile, JSON.stringify(this.summary, null, 2));
 
         // # open note
         await open_file(this.app, newWikiEntry);
@@ -173,6 +222,10 @@ export class WikiLibrary{
     }
 
     async refreshTagInheritances(): Promise<void>{
+        // TODO
+    }
+
+    async refresh(){
         // TODO
     }
 }

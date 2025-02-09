@@ -63,6 +63,22 @@ export default class LouisWikiPlugin extends Plugin {
 			}
 		});
 
+		this.addCommand({
+			id: 'create-new-category',
+			name: 'Create new category',
+			callback: () => {
+				this.Command_CreateNewCategoryWikiEntry();
+			}
+		});
+
+		this.addCommand({
+			id: 'refresh-wiki-library',
+			name: 'Refresh wiki library',
+			callback: () => {
+				this.Command_RefreshWikiLibrary();
+			}
+		});
+
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new SampleSettingTab(this.app, this));
 
@@ -213,6 +229,18 @@ export default class LouisWikiPlugin extends Plugin {
 
 	async Command_CreateNewDisambiguationWikiEntry(){
 		if (!this.wikiLibrary) error('Wiki library not initialized.');
+		error('Not implemented yet.');
+	}
+
+	async Command_CreateNewCategoryWikiEntry(){
+		// 类型wiki, 固定放在某个路径下, 此路径下的wiki_tag不会被继承.
+		// 比如, "方法", "数据集", ""
+		error('Not implemented yet.');
+	}
+
+	async Command_RefreshWikiLibrary(){
+		// 检查每个WikiEntry的metadata是否完整, 如果不完整则标准化.
+		this.wikiLibrary.refresh();
 	}
 }
 
