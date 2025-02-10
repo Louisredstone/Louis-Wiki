@@ -86,6 +86,7 @@ export default class LouisWikiPlugin extends Plugin {
 		// Using this function will automatically remove the event listener when this plugin is disabled.
 		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
 			console.log('click', evt);
+			// TODO: input '##' to trigger a suggester of category tags.
 		});
 
 		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
@@ -241,6 +242,12 @@ export default class LouisWikiPlugin extends Plugin {
 	async Command_RefreshWikiLibrary(){
 		// 检查每个WikiEntry的metadata是否完整, 如果不完整则标准化.
 		this.wikiLibrary.refresh();
+	}
+
+	async EditorCommand_InsertZoteroReferenceFromClipboard(){
+		// TODO: implement this.
+		error('Not implemented yet.');
+
 	}
 }
 
