@@ -25,7 +25,11 @@ class Node{
         this.children = children;
         this.scc = scc;
         this.init_frontmatter();
-        if (!this.frontmatter) return;
+        if (this.frontmatter == null){
+            log("this.frontmatter is null after init_frontmatter(). value: "+this.frontmatter+", keys: "+Object.keys(this.frontmatter).join(', '));
+        }
+        if (this.frontmatter == null) return;
+        log("if wikitag")
         if (wiki_tag)
             this.wiki_tag = wiki_tag;
         else
@@ -36,7 +40,14 @@ class Node{
         // TODO: check if cachedMetadata is available
         const content = await this.file.vault.read(this.file);
         const frontmatterInfo = getFrontMatterInfo(content);
-        this.frontmatter = parseYaml(frontmatterInfo.frontmatter);
+        const frontmatter = parseYaml(frontmatterInfo.frontmatter);
+        if (frontmatter == null){
+            log("frontmatter is null after parseYaml()");
+        }
+        this.frontmatter = frontmatter as Dict;
+        if (this.frontmatter == null){
+            log("this.frontmatter is null after this.frontmatter = frontmatter as Dict;");
+        }
         this.frontmatter_modified = false;
     }
 
@@ -63,9 +74,9 @@ class Node{
         this.frontmatter_modified = true;
     }
 
-    get(field: string){
-        return this.frontmatter[field];
-    }
+    // get(field: string){
+    //     return this.frontmatter[field];
+    // }
 
     async save_frontmatter(): Promise<void>{
         if (!this.frontmatter_modified) return;
@@ -162,25 +173,10 @@ export class WikiLibrary{
         Vault.recurseChildren(this.rootFolder, (tAbstractFile)=>{
             if (tAbstractFile instanceof TFile && tAbstractFile.extension ==='md')
             {
-                // const metadata = this.app.metadataCache.getFileCache(tAbstractFile);
-                // if (!metadata) {
-                //     notesWithoutMetadata.push(tAbstractFile);
-                //     log("Metadata not found for file: "+tAbstractFile.path+", skipped.");
-                //     return;
-                // }
-                // if (!metadata.frontmatter){
-                //     notesWithoutFrontmatter.push(tAbstractFile);
-                //     log("Frontmatter not found for file: "+tAbstractFile.path+", skipped.");
-                //     return;
-                // }
-                // const wiki_tag = metadata.frontmatter['wiki-tag'];
-                // if (!wiki_tag) {
-                //     notesWithoutWikiTag.push(tAbstractFile);
-                //     log("Wiki tag not found for file: "+tAbstractFile.path+", skipped.");
-                //     return;
-                // }
+                log("[DEBUG] Processing file: "+tAbstractFile.path);
                 const node = new Node(tAbstractFile);
-                if (!node.frontmatter){
+                log(Object.keys(node.frontmatter).join(', '));
+                if (node.frontmatter == null){
                     notesWithoutFrontmatter.push(tAbstractFile);
                     log("Frontmatter not found for file: "+tAbstractFile.path+", skipped.");
                     return;
@@ -204,7 +200,8 @@ export class WikiLibrary{
             const node = nodes[wiki_tag];
             // const metadata = node.frontmatter!;
             // const frontmatter = metadata.frontmatter!;
-            const note_type = node.get('note-type');
+            // const note_type = node.get('note-type');
+            const note_type = node.frontmatter['note-type'];
             if (note_type === 'wiki') {
                 wikiEntries.push(node);
             } else if (note_type === 'category') {

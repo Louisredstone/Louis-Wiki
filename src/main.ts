@@ -298,7 +298,6 @@ class SampleSettingTab extends PluginSettingTab {
 			.setDesc('(For developers) Enable debug mode.')
 			.addButton(button => button
 				.setButtonText(this.plugin.settings.debug? 'Disable' : 'Enable')
-				.setDisabled(this.plugin.settings.debug)
 				.onClick(async () => {
 					this.plugin.settings.debug = !this.plugin.settings.debug;
 					await this.plugin.saveSettings();
