@@ -425,6 +425,7 @@ export class WikiLibrary{
                         }
                     }
                 }
+                function 
                 delete this.outerTagRefs[wiki_tag];
             }
             this.nodes[wiki_tag] = node;
