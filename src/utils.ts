@@ -13,7 +13,7 @@ import {
 	Vault
 } from 'obsidian';
 
-export function log(msg: string, duration = 0) {
+export function log(msg: string, duration = 3) {
 	const notice = new Notice(msg, duration*1000);
 	return notice;
 }

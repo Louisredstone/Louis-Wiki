@@ -4,10 +4,11 @@ import { log, error, convert_to_legal_tag } from './utils';
 import { inputPrompt } from './gui/inputPrompt';
 import { suggester } from './gui/suggester';
 
-interface LouisWikiPluginSettings {
+export interface LouisWikiPluginSettings {
 	wikiFolder: string|null;
 	tagAliasEnabled: boolean;
 	entryTemplate: string;
+	debug: boolean;
 }
 
 const DEFAULT_SETTINGS: LouisWikiPluginSettings = {
@@ -18,12 +19,13 @@ const DEFAULT_SETTINGS: LouisWikiPluginSettings = {
 
 {{title}}
 
-#相关链接
+# 相关链接
 \`\`\`dataviewjs
 dv.list(dv.pages('#'+dv.current().file.frontmatter['wiki-tag']).map(n => n.file.link))
 \`\`\`
 
-`
+`,
+	debug: false
 }
 
 export default class LouisWikiPlugin extends Plugin {
@@ -84,10 +86,10 @@ export default class LouisWikiPlugin extends Plugin {
 
 		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
 		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			console.log('click', evt);
-			// TODO: input '##' to trigger a suggester of category tags.
-		});
+		// this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
+		// 	console.log('click', evt);
+		// 	// TODO: input '##' to trigger a suggester of category tags.
+		// });
 
 		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
 		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
@@ -110,7 +112,7 @@ export default class LouisWikiPlugin extends Plugin {
 			log('Please set the wiki folder in the settings.');
 			return;
 		}
-		this.wikiLibrary = new WikiLibrary(this.app, this.settings.wikiFolder!, this.settings.entryTemplate);
+		this.wikiLibrary = new WikiLibrary(this.app, this.settings);
 	}
 
 	async Command_CreateNewWikiEntry(){
@@ -120,7 +122,7 @@ export default class LouisWikiPlugin extends Plugin {
 		// choose folder
         // create new file
 		if (!this.wikiLibrary) error('Wiki library not initialized.');
-		const userInput = await inputPrompt('Create new wiki entry', '', 'Only Name is required, other fields are optional.<br>Name can be en/zh/abbr.<br>Name will become the wiki-tag.<br> Aliases and tags will be processed automatically.', 'Name, alias1, alias2, #tag1, #tag2, //description')
+		const userInput = await inputPrompt('Create new wiki entry', '', 'Only Name is required, other fields are optional.\nName can be en/zh/abbr.\nName will become the wiki-tag.\n Aliases and tags will be processed automatically.', 'Name, alias1, alias2, #tag1, #tag2, //description')
 		// e.g.:
 		// 通用人工智能 (Artificial General Intelligence, AGI)
 		// QuickAdd, 快加 (QA): Obsidian插件
@@ -134,8 +136,6 @@ export default class LouisWikiPlugin extends Plugin {
 		function parse_wiki_input(userInput: string){
 			console.log("parse wiki input");
 			const parts: string[] = userInput.split(/\/\//);
-			// #FIXME: need to change the grammar here.
-			// it is still old code.
 			
 			var chineseNames: string[] = [];
 			var englishNames: string[] = [];
@@ -222,6 +222,7 @@ export default class LouisWikiPlugin extends Plugin {
 			titleEntities
 		} = generate_wiki_title_and_wikiTag(namesWithType);
 
+		this.wikiLibrary.init_folders();
 		const folders = this.wikiLibrary.folders;
 		const chosenFolder: TFolder = await suggester(this.app, folders.map(folder => folder.path), folders) // TODO: create new folder if necessary.
 
@@ -289,7 +290,21 @@ class SampleSettingTab extends PluginSettingTab {
 				.onChange(async (value) => {
 					this.plugin.settings.wikiFolder = value;
 					await this.plugin.saveSettings();
-				}));
+				})
+			);
+
+		new Setting(containerEl)
+			.setName('Debug')
+			.setDesc('(For developers) Enable debug mode.')
+			.addButton(button => button
+				.setButtonText(this.plugin.settings.debug? 'Disable' : 'Enable')
+				.setDisabled(this.plugin.settings.debug)
+				.onClick(async () => {
+					this.plugin.settings.debug = !this.plugin.settings.debug;
+					await this.plugin.saveSettings();
+					button.setButtonText(this.plugin.settings.debug ? 'Disable' : 'Enable');
+				})
+			);
 	}
 }
 

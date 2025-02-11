@@ -48,11 +48,17 @@ class InputPromptModal extends Modal {
         
         contentEl.createEl('h2', {text: this.title})
         if (this.pre_description){
-            contentEl.createEl('p', {text: this.pre_description})
+            const lines = this.pre_description.split("\n");
+            for (let line of lines){
+                contentEl.createEl('p', {text: line})
+            }
         }
         const inputEl = contentEl.createEl('input', {attr: {type: 'text', placeholder: placeholder, value: value}, cls: 'full-width-input'});
         if (this.post_description){
-            contentEl.createEl('p', {text: this.post_description})
+            const lines = this.post_description.split("\n");
+            for (let line of lines){
+                contentEl.createEl('p', {text: line})
+            }
         }
 
         inputEl.addEventListener('keydown', async (event: KeyboardEvent) => {

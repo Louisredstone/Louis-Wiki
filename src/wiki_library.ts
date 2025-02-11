@@ -1,18 +1,80 @@
 // add new wiki entry
 // update wiki library
 
-import { App, Vault, Notice, TFolder, TFile, Modal, ButtonComponent, stringifyYaml, CachedMetadata } from 'obsidian';
+import { App, Vault, Notice, TFolder, TFile, Modal, ButtonComponent, parseYaml, stringifyYaml, getFrontMatterInfo } from 'obsidian';
 import {log, error, basename, open_file, open_file_by_path, get_sub_folders, delete_element} from './utils';
 import { yesNoPrompt } from './gui/yesNoPrompt';
 import { suggester } from './gui/suggester';
+import { LouisWikiPluginSettings } from './main'
 
-interface Node{
+type Dict = {[key: string]: any};
+
+class Node{
     file: TFile;
-    metadata: CachedMetadata|null;
+    frontmatter: Dict;
     parents: Node[];
     children: Node[];
     scc: SCC|null;
     wiki_tag: string;
+
+    frontmatter_modified: boolean = false;
+
+    constructor(file: TFile, wiki_tag: string|null = null, parents: Node[] = [], children: Node[] = [], scc: SCC|null = null){
+        this.file = file;
+        this.parents = parents;
+        this.children = children;
+        this.scc = scc;
+        this.init_frontmatter();
+        if (!this.frontmatter) return;
+        if (wiki_tag)
+            this.wiki_tag = wiki_tag;
+        else
+            this.wiki_tag = this.frontmatter.wiki_tag;
+    }
+
+    async init_frontmatter(): Promise<void>{
+        // TODO: check if cachedMetadata is available
+        const content = await this.file.vault.read(this.file);
+        const frontmatterInfo = getFrontMatterInfo(content);
+        this.frontmatter = parseYaml(frontmatterInfo.frontmatter);
+        this.frontmatter_modified = false;
+    }
+
+    add(field: string, value: any){
+        const plurals: Dict = {'tag': 'tags', 'alias': 'aliases'}
+        if (field in plurals){
+            const plural = plurals[field];
+            if (plural in this.frontmatter){
+                if (this.frontmatter[plural].includes(value)) return;
+                this.frontmatter[plural].push(value);
+                this.frontmatter_modified = true;
+            } else {
+                this.frontmatter[plural] = [value];
+                this.frontmatter_modified = true;
+            }
+            return;
+        } 
+        else error("Invalid field: "+field);
+    }
+
+    set_frontmatter(field: string, value: any){
+        // if (field in this.frontmatter && this.frontmatter[field] === value) return;
+        this.frontmatter[field] = value;
+        this.frontmatter_modified = true;
+    }
+
+    get(field: string){
+        return this.frontmatter[field];
+    }
+
+    async save_frontmatter(): Promise<void>{
+        if (!this.frontmatter_modified) return;
+        const content = await this.file.vault.read(this.file);
+        const frontmatterInfo = getFrontMatterInfo(content);
+        const {from: frontmatterStart, contentStart} = frontmatterInfo;
+        await this.file.vault.modify(this.file, content.slice(0, frontmatterStart) + stringifyYaml(this.frontmatter) + content.slice(contentStart));
+        this.frontmatter_modified = false;
+    }
 }
 
 interface SCC{ // Strongly Connected Component
@@ -30,6 +92,7 @@ interface SimilarityInfo{
 
 export class WikiLibrary{
     app: App;
+    debug: boolean = false;
     rootFolderPath: string;
     rootFolder: TFolder;
     folders: TFolder[] = [];
@@ -43,20 +106,22 @@ export class WikiLibrary{
     categories: Node[] = [];
     otherTypeNotes: Node[]  = [];
     // abnormal notes
-    notesWithoutMetadata: TFile[] = [];
+    // notesWithoutMetadata: TFile[] = [];
     notesWithoutFrontmatter: TFile[] = [];
-    notesWithoutWikiTag: TFile[] = [];
+    // notesWithoutWikiTag: TFile[] = [];
     duplicated: {[wiki_tag: string]: Node[]};
 
     outerTagRefs: {[tag: string]: Node[]} = {};
     
-    constructor(app: App, rootFolder: string|null, entryTemplate: string) {
+    constructor(app: App, settings: LouisWikiPluginSettings) {
         log("Initializing wiki library...");
+        const { wikiFolder: rootFolder, entryTemplate } = settings;
         if (!rootFolder) {
             error("Root folder not specified, please set it in settings.");
             return;
         }
         this.app = app;
+        this.debug = settings.debug;
         this.rootFolderPath = rootFolder;
         this.entryTemplate = entryTemplate;
         this.SCCs = {};
@@ -89,32 +154,38 @@ export class WikiLibrary{
 
     async init_graph(): Promise<void> {
         const nodes: {[wiki_tag: string]: Node} = {};
-        const notesWithoutMetadata: TFile[] = [];
+        // const notesWithoutMetadata: TFile[] = [];
         const notesWithoutFrontmatter: TFile[] = [];
-        const notesWithoutWikiTag: TFile[] = [];
+        // const notesWithoutWikiTag: TFile[] = [];
         const duplicated: {[wiki_tag: string]: Node[]} = {};
         // Initialize nodes.
         Vault.recurseChildren(this.rootFolder, (tAbstractFile)=>{
             if (tAbstractFile instanceof TFile && tAbstractFile.extension ==='md')
             {
-                const metadata = this.app.metadataCache.getFileCache(tAbstractFile);
-                if (!metadata) {
-                    notesWithoutMetadata.push(tAbstractFile);
-                    log("Metadata not found for file: "+tAbstractFile.path+", skipped.");
-                    return;
-                }
-                if (!metadata.frontmatter){
+                // const metadata = this.app.metadataCache.getFileCache(tAbstractFile);
+                // if (!metadata) {
+                //     notesWithoutMetadata.push(tAbstractFile);
+                //     log("Metadata not found for file: "+tAbstractFile.path+", skipped.");
+                //     return;
+                // }
+                // if (!metadata.frontmatter){
+                //     notesWithoutFrontmatter.push(tAbstractFile);
+                //     log("Frontmatter not found for file: "+tAbstractFile.path+", skipped.");
+                //     return;
+                // }
+                // const wiki_tag = metadata.frontmatter['wiki-tag'];
+                // if (!wiki_tag) {
+                //     notesWithoutWikiTag.push(tAbstractFile);
+                //     log("Wiki tag not found for file: "+tAbstractFile.path+", skipped.");
+                //     return;
+                // }
+                const node = new Node(tAbstractFile);
+                if (!node.frontmatter){
                     notesWithoutFrontmatter.push(tAbstractFile);
                     log("Frontmatter not found for file: "+tAbstractFile.path+", skipped.");
                     return;
                 }
-                const wiki_tag = metadata.frontmatter['wiki-tag'];
-                if (!wiki_tag) {
-                    notesWithoutWikiTag.push(tAbstractFile);
-                    log("Wiki tag not found for file: "+tAbstractFile.path+", skipped.");
-                    return;
-                }
-                const node = {file: tAbstractFile, metadata: metadata, parents: [], children: [], scc: null, wiki_tag: wiki_tag};
+                const wiki_tag = node.wiki_tag;
                 if (wiki_tag in duplicated){
                     duplicated[wiki_tag].push(node);
                 } else if (wiki_tag in nodes){
@@ -131,13 +202,14 @@ export class WikiLibrary{
         const otherTypeNotes: Node[] = [];
         for (const wiki_tag in nodes) {
             const node = nodes[wiki_tag];
-            const metadata = node.metadata!;
-            const frontmatter = metadata.frontmatter!;
-            if (frontmatter['note-type'] === 'wiki') {
+            // const metadata = node.frontmatter!;
+            // const frontmatter = metadata.frontmatter!;
+            const note_type = node.get('note-type');
+            if (note_type === 'wiki') {
                 wikiEntries.push(node);
-            } else if (frontmatter['note-type'] === 'category') {
+            } else if (note_type === 'category') {
                 categories.push(node);
-            } else if (frontmatter['note-type'] === 'disambiguation') {
+            } else if (note_type === 'disambiguation') {
                 disambiguationNotes.push(node);
             } else {
                 otherTypeNotes.push(node);
@@ -147,7 +219,7 @@ export class WikiLibrary{
         // Initialize graph.
         for (const wiki_tag in nodes){
             const node = nodes[wiki_tag];
-            const tags = node.metadata!.frontmatter!.tags;
+            const tags = node.frontmatter.tags;
             for (const tag of tags){
                 if (tag in nodes) {
                     node.parents.push(nodes[tag as string]);
@@ -245,18 +317,21 @@ export class WikiLibrary{
         this.wikiEntries = wikiEntries;
         this.categories = categories;
         this.disambiguationNotes = disambiguationNotes;
-        this.duplicated = duplicated;
         this.otherTypeNotes = otherTypeNotes;
         this.SCCs = SCCs;
+
+        this.notesWithoutFrontmatter = notesWithoutFrontmatter;
+        // this.notesWithoutMetadata = notesWithoutMetadata;
+        // this.notesWithoutWikiTag = notesWithoutWikiTag;
+        this.duplicated = duplicated;
     }
 
     apply_tag_inheritance(){
         function apply_tag_inheritance_rec(scc: SCC, tags: string[] = []): void{
             // Inside SCC, share all tags.
             for (const node of scc.nodes){
-                const node_tags = node.metadata!.frontmatter!.tags;
-                if (!node_tags) node.metadata!.frontmatter!.tags = tags.slice();
-                else node.metadata!.frontmatter!.tags = node_tags.concat(tags.filter(tag => !node_tags.includes(tag)));
+                const node_tags = node.frontmatter.tags;
+                node.set_frontmatter('tags', node_tags.concat(tags.filter(tag => !node_tags.includes(tag))));
             }
             tags.push(scc.pseudo_wiki_tag);
             // Spread tags to children.
@@ -273,18 +348,18 @@ export class WikiLibrary{
         const bigSCCs = Object.values(this.SCCs).filter(scc => scc.nodes.length > 1);
         var report_necessary = false;
         var report_content = "# Wiki Library Problem Report\n\n";
-        if (this.notesWithoutMetadata.length > 0) {
-            report_content += "## Notes without metadata\n" + this.notesWithoutMetadata.map(file => "- "+file.path).join('\n') + "\n\n";
-            report_necessary = true;
-        }
+        // if (this.notesWithoutMetadata.length > 0) {
+        //     report_content += "## Notes without metadata\n" + this.notesWithoutMetadata.map(file => "- "+file.path).join('\n') + "\n\n";
+        //     report_necessary = true;
+        // }
         if (this.notesWithoutFrontmatter.length > 0) {
             report_content += "## Notes without frontmatter\n" + this.notesWithoutFrontmatter.map(file => "- "+file.path).join('\n') + "\n\n";
             report_necessary = true;
         }
-        if (this.notesWithoutWikiTag.length > 0) {
-            report_content += "## Notes without wiki tag\n" + this.notesWithoutWikiTag.map(file => "- "+file.path).join('\n') + "\n\n";
-            report_necessary = true;
-        }
+        // if (this.notesWithoutWikiTag.length > 0) {
+        //     report_content += "## Notes without wiki tag\n" + this.notesWithoutWikiTag.map(file => "- "+file.path).join('\n') + "\n\n";
+        //     report_necessary = true;
+        // }
         if (Object.keys(this.duplicated).length > 0) {
             report_content += "## Duplicated wiki tags\n" + Object.keys(this.duplicated).map(wiki_tag => {
                 const nodes = this.duplicated[wiki_tag];
@@ -315,6 +390,7 @@ export class WikiLibrary{
     }
 
     async addNewEntry(folder: string|TFolder, title: string, wiki_tag: string, aliases: string[], tags: string[], description: string, titleItems: string[]): Promise<void> {
+        this.debug_log("WikiLibrary.addNewEntry called.");
         const similarities = await this.similarityAnalyze(wiki_tag, aliases, titleItems);
         if (similarities.length > 0) {
             const result = await foundMultipleSimilarNotesPrompt(this.app, similarities);
@@ -328,6 +404,7 @@ export class WikiLibrary{
             folder = this.app.vault.getFolderByPath(folder)!;
         }
 
+        this.debug_log("Checking if note already exists...");
         // # check if note already exists
         var sameTitleNote = Object.values(this.nodes).filter(note => note.file.name == title)
         if (sameTitleNote.length > 0) {
@@ -338,34 +415,34 @@ export class WikiLibrary{
         }
 
         // # create new note
-        // const frontmatter = {
-        //     "note-type": "wiki",
-        //     date: new Date().toLocaleDateString(),
-        //     time: new Date().toLocaleTimeString(),
-        //     aliases: ['#'+wiki_tag].concat(aliases),
-        //     tags: [wiki_tag].concat(tags).map(tag => '#'+tag),
-        //     "wiki-tag": wiki_tag,
-        //     description: description        
-        // };
+        const frontmatter = {
+            "note-type": "wiki",
+            date: new Date().toLocaleDateString(),
+            time: new Date().toLocaleTimeString(),
+            aliases: ['#'+wiki_tag].concat(aliases),
+            tags: [wiki_tag].concat(tags).map(tag => '#'+tag),
+            "wiki-tag": wiki_tag,
+            description: description        
+        };
 
-        // var content = '---\n' + stringifyYaml(frontmatter) + '---\n' + this.entryTemplate.replace('{{title}}', title);
-        const content = this.entryTemplate.replace('{{title}}', title);
+        this.debug_log("Creating new note...");
+        const content = '---\n' + stringifyYaml(frontmatter) + '---\n' + this.entryTemplate.replace('{{title}}', title);
+        // const content = this.entryTemplate.replace('{{title}}', title);
 
         const newNoteFilePath = folder.path+'/'+title+'.md'
         const newWikiEntry = await this.app.vault.create(newNoteFilePath, content);
-        const cache = this.app.metadataCache.getFileCache(newWikiEntry);
-        cache!.frontmatter!["note-type"] = "wiki";
-        cache!.frontmatter!.date = new Date().toLocaleDateString();
-        cache!.frontmatter!.time = new Date().toLocaleTimeString();
-        cache!.frontmatter!.aliases = ['#'+wiki_tag].concat(aliases);
-        cache!.frontmatter!.tags = [wiki_tag].concat(tags).map(tag => '#'+tag);
-        cache!.frontmatter!["wiki-tag"] = wiki_tag;
-        cache!.frontmatter!.description = description;
+        // const cache = this.app.metadataCache.getFileCache(newWikiEntry);
+        // if (!cache) {
+        //     this.debug_log("Metadata cache not found for new note.");
+        // }
 
+        this.debug_log("Post processing wiki entry...");
         // # post process wiki entry creation: update wiki summary
         console.log("post process wiki entry creation");
-        const node: Node = {file: newWikiEntry, metadata: cache, parents: [], children: [], scc: null, wiki_tag: wiki_tag};
+        // const newNode: Node = {file: newWikiEntry, frontmatter: cache, parents: [], children: [], scc: null, wiki_tag: wiki_tag};
+        const newNode = new Node(newWikiEntry, wiki_tag);
         if (wiki_tag in this.nodes) { // duplicated wiki tag.
+            this.debug_log("Duplicated wiki tag found, merging notes.");
             const nodeAlreadyExists = this.nodes[wiki_tag];
             for(const parent of nodeAlreadyExists.parents){
                 delete_element(parent.children, nodeAlreadyExists);
@@ -386,54 +463,118 @@ export class WikiLibrary{
                 delete_element(existingSCC.nodes, nodeAlreadyExists);
             }
             delete this.nodes[wiki_tag];
-            this.duplicated[wiki_tag] = [nodeAlreadyExists, node];
+            this.duplicated[wiki_tag] = [nodeAlreadyExists, newNode];
         } else { // new unique wiki tag.
-            const newSCC: SCC = {nodes: [node], parents: [], children: [], pseudo_wiki_tag: wiki_tag};
-            node.scc = newSCC;
-            for(const tag of node.metadata!.frontmatter!.tags){
+            this.debug_log("New unique wiki tag found, creating new SCC.")
+            const newSCC: SCC = {nodes: [newNode], parents: [], children: [], pseudo_wiki_tag: wiki_tag};
+            newNode.scc = newSCC;
+            for(const tag of newNode.frontmatter.tags){
                 if (tag in this.nodes){
                     const parent = this.nodes[tag as string];
                     newSCC.parents.push(parent.scc!);
                     parent.scc!.children.push(newSCC);
-                    const parentTags = parent.metadata!.frontmatter!.tags;
+                    const parentTags = parent.frontmatter.tags;
                     for(const parent_tag of parentTags){
                         if (parent_tag in this.nodes
-                            && this.nodes[parent_tag as string].metadata!.frontmatter!["note-type"] != "category"
-                            && !node.metadata!.frontmatter!.tags.includes(parent_tag)){
-                            node.metadata!.frontmatter!.tags.push(parent_tag);
+                            && this.nodes[parent_tag as string].frontmatter["note-type"] != "category"
+                            && !newNode.frontmatter.tags.includes(parent_tag)){
+                            newNode.frontmatter.tags.push(parent_tag);
                         }
                     }
                     for(const uncle of parent.scc!.nodes){
-                        node.parents.push(uncle);
-                        uncle.children.push(node);
+                        newNode.parents.push(uncle);
+                        uncle.children.push(newNode);
                     }
                 }
             }
+            this.debug_log("Check if new entry is subscribed...")
             if (wiki_tag in this.outerTagRefs){
-                const wikiTagsToMerge: Set<string> = new Set();
-                const SCCsToMerge: Set<SCC> = new Set();
-                // This new entry would be a 'popular' one, who has already had some subscribers before it really comes.
+                // This new entry would be a 'subscribed' one, who has already had some subscribers before it really comes.
                 // In this case, maybe some SCCs should be merged.
                 for(const child of this.outerTagRefs[wiki_tag]){
                     // If new node (now) has some tags belongs to the subscribers (this.outerTagRefs[tag]), it means these tags have been spread to the new node.
                     // Therefore, all the SCCs on this spread chain should be merged.
-                    child.parents.push(node);
-                    node.children.push(child);
-                    if (child.wiki_tag in node.metadata!.frontmatter!.tags){
-                        for(const cousin of child.scc!.nodes){
-                            wikiTagsToMerge.add(cousin.wiki_tag);
+                    child.parents.push(newNode);
+                    newNode.children.push(child);
+                }
+                delete this.outerTagRefs[wiki_tag];
+                var super_index_counter: number = 0;
+                const super_stack: string[] = [];
+                const super_on_stack: Set<string> = new Set();
+                const super_low_links: {[wiki_tag: string]: number} = {};
+                const super_indices: {[wiki_tag: string]: number} = {};
+                const super_sccs: {[wiki_tag: string]: SCC[]} = {};
+                function super_strong_connect(scc: SCC){
+                    const pseudo_wiki_tag = scc.pseudo_wiki_tag;
+                    super_indices[pseudo_wiki_tag] = super_index_counter;
+                    super_low_links[pseudo_wiki_tag] = super_index_counter;
+                    super_index_counter++;
+                    super_stack.push(pseudo_wiki_tag);
+                    super_on_stack.add(pseudo_wiki_tag);
+                    
+                    for(const parent of scc.parents){
+                        if (!(parent.pseudo_wiki_tag in super_indices)){
+                            super_strong_connect(parent);
+                            super_low_links[pseudo_wiki_tag] = Math.min(super_low_links[pseudo_wiki_tag], super_low_links[parent.pseudo_wiki_tag]);
+                        } else if (super_on_stack.has(parent.pseudo_wiki_tag)){
+                            super_low_links[pseudo_wiki_tag] = Math.min(super_low_links[pseudo_wiki_tag], super_indices[parent.pseudo_wiki_tag]);
                         }
                     }
-                }
-                function 
-                delete this.outerTagRefs[wiki_tag];
-            }
-            this.nodes[wiki_tag] = node;
-        }
-        // this.summary['files'][newNoteFilePath] = frontmatter;
-        // this.summary.updated_at = new Date().getTime();
-        // this.app.vault.modify(this.summaryTFile, JSON.stringify(this.summary, null, 2));
 
+                    if (super_low_links[pseudo_wiki_tag] === super_indices[pseudo_wiki_tag]){
+                        const super_scc: SCC[] = [];
+                        var w: string|undefined;
+                        while(true){
+                            w = super_stack.pop();
+                            if (w === undefined) error("stack underflow");
+                            super_on_stack.delete(w!);
+                            const scc = this.SCCs[w!];
+                            super_scc.push(scc);
+                            if (w == pseudo_wiki_tag) break;
+                        }
+                        super_sccs[pseudo_wiki_tag] = super_scc;
+                    }
+                }
+                super_strong_connect(newSCC);
+                const n_super_sccs = Object.keys(super_sccs).length;
+                if (n_super_sccs > 1){
+                    error("Error: Algorithm wrong, there are more than one Super SCCs.");
+                    return;
+                } else if (n_super_sccs == 1){
+                    if (wiki_tag in super_sccs){
+                        const super_scc = super_sccs[wiki_tag];
+                        // merge SCCs in super_scc.
+                        const newParentSCCs: Set<SCC> = new Set(newSCC.parents);
+                        const newChildSCCs: Set<SCC> = new Set();
+                        for(const scc of super_scc){
+                            if (scc === newSCC) continue;
+                            newSCC.nodes = newSCC.nodes.concat(scc.nodes);
+                            for(const parent of scc.parents){
+                                newParentSCCs.add(parent);
+                                delete_element(parent.children, scc);
+                                parent.children.push(newSCC);
+                            }
+                            for(const child of scc.children){
+                                newChildSCCs.add(child);
+                                delete_element(child.parents, scc);
+                                child.parents.push(newSCC);
+                            }
+                            delete this.SCCs[scc.pseudo_wiki_tag];
+                            // FIXME: the logic here is a bit complicated and fuzzy, I need to check it.
+                        }
+                        newSCC.parents = Array.from(newParentSCCs).filter(scc => !super_scc.includes(scc));
+                        newSCC.children = Array.from(newChildSCCs).filter(scc => !super_scc.includes(scc));
+                    } else {
+                        error("Error: Algorithm wrong, new wiki_tag not in Super SCC.");
+                        return;
+                    }
+                }
+            }
+            this.nodes[wiki_tag] = newNode;
+            this.SCCs[wiki_tag] = newSCC;
+        }
+
+        log("Opening new note...")
         // # open note
         await open_file(this.app, newWikiEntry);
 
@@ -442,10 +583,11 @@ export class WikiLibrary{
 
     async similarityAnalyze(wiki_tag: string, aliases: string[], titleEntities: string[]): Promise<SimilarityInfo[]>{
         var similarityInfos = Object.values(this.nodes).map((node: Node) => {
-            const metadata = node.metadata;
-            if (!metadata) return null;
-            const frontmatter = metadata.frontmatter;
-            if (!frontmatter) return null;
+            // const metadata = node.frontmatter;
+            // if (!metadata) return null;
+            // const frontmatter = metadata.frontmatter;
+            // if (!frontmatter) return null;
+            const frontmatter = node.frontmatter;
             var setA = new Set(titleEntities);
             var setB = new Set(frontmatter.tags.concat(frontmatter.aliases));
             var intersection = new Set(titleEntities.filter(x => setB.has(x)));
@@ -463,134 +605,19 @@ export class WikiLibrary{
         return similarityInfos;
     }
 
-    // async refreshTagInheritance(node: Node): Promise<void>{
-    //     // Not recursive.
-    //     const new_tags: Set<string> = new Set();
-    //     for (const tag of node.metadata!.frontmatter!.tags){
-    //         if (tag in this.wiki_tag_dict){
-    //             const parents = this.wiki_tag_dict[tag];
-    //             if (parents.length == 1){
-    //                 const parent = parents[0];
-    //                 if (parent.metadata!.frontmatter!["note-type"] === "category") continue;
-    //                 for (const parent_tag of parent.metadata!.frontmatter!.tags){
-    //                     new_tags.add(parent_tag);
-    //                 }
-    //             } else {
-    //                 log("Warning: duplicated wiki tag inheritance. Skipped.");
-    //             }
-    //         }
-    //     }
-    //     for (const tag of new_tags){
-    //         if (!(tag in node.metadata!.frontmatter!.tags)){
-    //             node.metadata!.frontmatter!.tags.push(tag);
-    //         }
-    //     }
-    // }
-
-    // async refreshAllTagInheritance(): Promise<void>{
-    //     interface Node{
-    //         wiki_tag: string;
-    //         file: TFile;
-    //         metadata: CachedMetadata;
-    //         parents: string[];
-    //         children: string[];
-    //         processed: boolean;
-    //     }
-    //     interface SCC{ // Strongly connected component.
-    //         nodes: Node[];
-    //         processed: boolean;
-    //         parents: string[];
-    //         children: string[];
-    //     }
-    //     const nodes: {[wiki_tag: string]: Node} = {};
-    //     // Initialize graph.
-    //     for (const fm of this.nodes){
-    //         const metadata = fm.metadata;
-    //         if (!metadata) error("Metadata not found for file: "+fm.file.path);
-    //         const frontmatter = metadata!.frontmatter;
-    //         if (!frontmatter) error("Frontmatter not found for file: "+fm.file.path);
-    //         const wiki_tag = frontmatter!['wiki-tag'];
-    //         if (!wiki_tag) error("Wiki tag not found in frontmatter of file: "+fm.file.path);
-    //         const tags = frontmatter!.tags;
-    //         if (!tags) error("Tags not found in frontmatter of file: "+fm.file.path);
-    //         if (wiki_tag in this.duplicated_wiki_tags) {
-    //             // duplicated wiki tag. skip all.
-    //             continue;
-    //         }
-    //         nodes[wiki_tag] = {wiki_tag, file: fm.file, metadata: metadata!, parents: [], children: [], processed: false};
-    //     }
-    //     // Initialize 'parents' and 'children' fields.
-    //     for (const wiki_tag in nodes){
-    //         const node = nodes[wiki_tag];
-    //         const tags = node.metadata.frontmatter!.tags;
-    //         for (const tag of tags){
-    //             if (tag in nodes) {
-    //                 node.parents.push(tag);
-    //                 (nodes[tag] as Node).children.push(wiki_tag);
-    //             }
-    //         }
-    //     }
-
-    //     var index_counter: number = 0;
-    //     const stack: string[] = [];
-    //     const on_stack: Set<string> = new Set();
-    //     const low_links: {[wiki_tag: string]: number} = {};
-    //     const indices: {[wiki_tag: string]: number} = {};
-    //     const sccs: SCC[] = [];
-    //     function strong_connect(wiki_tag: string): void{
-    //         // Set index and lowlink for current node.
-    //         indices[wiki_tag] = index_counter;
-    //         low_links[wiki_tag] = index_counter;
-    //         index_counter++;
-    //         stack.push(wiki_tag);
-    //         on_stack.add(wiki_tag);
-    //         // Consider successors of current node.
-    //         const node = nodes[wiki_tag];
-    //         for (const parent of node.parents){
-    //             if (!(parent in indices)){
-    //                 // Successor has not yet been visited; recurse on it.
-    //                 strong_connect(parent);
-    //                 low_links[wiki_tag] = Math.min(low_links[wiki_tag], low_links[parent]);
-    //             } else if (on_stack.has(parent)){
-    //                 // the successor is in stack and hence in the current SCC
-    //                 low_links[wiki_tag] = Math.min(low_links[wiki_tag], indices[parent]);
-    //             }
-    //         }
-            
-    //         // If current node is a root node, pop the stack and generate an SCC.
-    //         if (low_links[wiki_tag] === indices[wiki_tag]){
-    //             const scc: SCC = {nodes: [], processed: false, parents: [], children: []};
-    //             var w: string|undefined;
-    //             while (true){
-    //                 w = stack.pop();
-    //                 if (w === undefined) error("stack underflow");
-    //                 on_stack.delete(w!);
-    //                 const node = nodes[w!];
-    //                 scc.nodes.push(node);
-    //                 scc.parents = scc.parents.concat(node.parents);
-    //                 scc.children = scc.children.concat(node.children);
-    //                 if (w == wiki_tag) break;
-    //             }
-    //             scc.parents = Array.from(new Set(scc.parents)).filter(tag => !(tag in scc.nodes));
-    //             scc.children = Array.from(new Set(scc.children)).filter(tag => !(tag in scc.nodes));
-    //             sccs.push(scc);
-    //         }
-    //     }
-
-    //     // Find all SCCs.
-    //     for (const wiki_tag in nodes){
-    //         if (!(wiki_tag in indices)){
-    //             strong_connect(wiki_tag);
-    //         }
-    //     }
-    // }
-
     async refresh(): Promise<void>{
         // TODO
     }
 
     async merge(fms: Node[]): Promise<void>{
         // TODO
+    }
+
+    debug_log(msg: string, duration: number = 3): void{
+        if (this.debug) {
+            log(msg, duration);
+            console.log(msg);
+        }
     }
 }
 
@@ -633,8 +660,8 @@ class FoundMultipleSimilarNotesModal extends Modal {
         for (const { fm, similarity, intersection_size } of this.similaritiesInfo) {
             const row = table.createEl('tr');
             var wiki_tag = '-';
-            if (fm.metadata) {
-                const frontmatter = fm.metadata.frontmatter;
+            if (fm.frontmatter) {
+                const frontmatter = fm.frontmatter.frontmatter;
                 if (frontmatter) {
                     wiki_tag = frontmatter['wiki-tag'];
                 }
