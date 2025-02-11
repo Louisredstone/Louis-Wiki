@@ -1,4 +1,4 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFolder, TFile } from 'obsidian';
+import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFolder, TFile, TextComponent } from 'obsidian';
 import { WikiLibrary } from './wiki_library';
 import { log, error, convert_to_legal_tag } from './utils';
 import { inputPrompt } from './gui/inputPrompt';
@@ -112,7 +112,7 @@ export default class LouisWikiPlugin extends Plugin {
 			log('Please set the wiki folder in the settings.');
 			return;
 		}
-		this.wikiLibrary = new WikiLibrary(this.app, this.settings);
+		this.wikiLibrary = await WikiLibrary.createAsync(this.app, this.settings);
 	}
 
 	async Command_CreateNewWikiEntry(){
@@ -281,17 +281,40 @@ class SampleSettingTab extends PluginSettingTab {
 
 		containerEl.empty();
 
+		// new Setting(containerEl)
+		// 	.setName('Wiki Folder')
+		// 	.setDesc('The folder where your wiki entries are stored.')
+		// 	.addText(text => text
+		// 		.setPlaceholder('/path/to/wiki/folder')
+		// 		.setValue(this.plugin.settings.wikiFolder || '')
+		// 		.onChange(async (value) => {
+		// 			if (value !== this.plugin.settings.wikiFolder){
+		// 				this.plugin.settings.wikiFolder = value;
+		// 				if (value !== null && value.trim() !== '')
+		// 					this.plugin.wikiLibrary = await WikiLibrary.createAsync(this.app, this.plugin.settings);
+		// 				await this.plugin.saveSettings();
+		// 			}
+		// 		})
+		// 	);
+		var wikiFolderTextBox: TextComponent;
 		new Setting(containerEl)
-			.setName('Wiki Folder')
-			.setDesc('The folder where your wiki entries are stored.')
-			.addText(text => text
-				.setPlaceholder('/path/to/wiki/folder')
-				.setValue(this.plugin.settings.wikiFolder || '')
-				.onChange(async (value) => {
-					this.plugin.settings.wikiFolder = value;
-					await this.plugin.saveSettings();
-				})
-			);
+		.setName('Wiki Folder')
+		.setDesc('The folder where your wiki entries are stored.')
+		.addText(text => {
+			text.setPlaceholder('/path/to/wiki/folder')
+			.setValue(this.plugin.settings.wikiFolder || '');
+			wikiFolderTextBox = text;
+		    }
+		).addButton(button => {
+			button.setButtonText('Apply');
+			button.onClick(async () => {
+				const value = (wikiFolderTextBox as TextComponent).getValue();
+				this.plugin.settings.wikiFolder = value;
+				if (value !== null && value.trim() !== '')
+					this.plugin.wikiLibrary = await WikiLibrary.createAsync(this.app, this.plugin.settings);
+				await this.plugin.saveSettings();
+			});
+		});
 
 		new Setting(containerEl)
 			.setName('Debug')
