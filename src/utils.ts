@@ -69,6 +69,17 @@ export function get_sub_folders_by_path(app: App, folderPath: string){
 	return get_sub_folders(tFolder);
 }
 
+export function exclude(arr: any[], element: any): any[] {
+	return arr.filter(function(obj) {
+		return obj!= element;
+	});
+}
+
+export function delete_element(arr: any[], element: any): any[] {
+	delete arr[arr.indexOf(element)];
+	return arr;
+}
+
 // get_sub_folders_by_path = (obsidian, vault, folderPath) => {
 //     tFolder = vault.getFolderByPath(folderPath);
 //     return get_sub_folders(obsidian, tFolder);

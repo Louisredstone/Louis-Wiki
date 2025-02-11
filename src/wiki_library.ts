@@ -2,7 +2,7 @@
 // update wiki library
 
 import { App, Vault, Notice, TFolder, TFile, Modal, ButtonComponent, stringifyYaml, CachedMetadata } from 'obsidian';
-import {log, error, basename, open_file, open_file_by_path, get_sub_folders} from './utils';
+import {log, error, basename, open_file, open_file_by_path, get_sub_folders, delete_element} from './utils';
 import { yesNoPrompt } from './gui/yesNoPrompt';
 import { suggester } from './gui/suggester';
 
@@ -33,21 +33,23 @@ export class WikiLibrary{
     rootFolderPath: string;
     rootFolder: TFolder;
     folders: TFolder[] = [];
+    entryTemplate: string;
+
     nodes: {[wiki_tag: string]: Node} = {};
+    SCCs: {[wiki_tag: string]: SCC} = {};
+    // legal note-types: wiki, category, disambiguation
     wikiEntries: Node[] = [];
     disambiguationNotes: Node[] = [];
     categories: Node[] = [];
     otherTypeNotes: Node[]  = [];
+    // abnormal notes
     notesWithoutMetadata: TFile[] = [];
     notesWithoutFrontmatter: TFile[] = [];
     notesWithoutWikiTag: TFile[] = [];
     duplicated: {[wiki_tag: string]: Node[]};
-    SCCs: {[wiki_tag: string]: SCC} = {};
-    entryTemplate: string;
 
-    wiki_tag_dict: {[wiki_tag: string]: Node[]};
-    duplicated_wiki_tags: string[];
-
+    outerTagRefs: {[tag: string]: Node[]} = {};
+    
     constructor(app: App, rootFolder: string|null, entryTemplate: string) {
         log("Initializing wiki library...");
         if (!rootFolder) {
@@ -150,6 +152,11 @@ export class WikiLibrary{
                 if (tag in nodes) {
                     node.parents.push(nodes[tag as string]);
                     (nodes[tag] as Node).children.push(node);
+                } else {
+                    if (tag in this.outerTagRefs)
+                        this.outerTagRefs[tag].push(node);
+                    else
+                        this.outerTagRefs[tag] = [node];
                 }
             }
         }
@@ -357,14 +364,69 @@ export class WikiLibrary{
 
         // # post process wiki entry creation: update wiki summary
         console.log("post process wiki entry creation");
-        const node = {file: newWikiEntry, metadata: cache, parents: [], children: [], scc: null, wiki_tag: wiki_tag};
-        if (wiki_tag in this.nodes) {
+        const node: Node = {file: newWikiEntry, metadata: cache, parents: [], children: [], scc: null, wiki_tag: wiki_tag};
+        if (wiki_tag in this.nodes) { // duplicated wiki tag.
             const nodeAlreadyExists = this.nodes[wiki_tag];
+            for(const parent of nodeAlreadyExists.parents){
+                delete_element(parent.children, nodeAlreadyExists);
+            }
+            for(const child of nodeAlreadyExists.children){
+                delete_element(child.parents, nodeAlreadyExists);
+            }
+            const existingSCC = nodeAlreadyExists.scc!;
+            if (existingSCC.nodes.length == 1){
+                for(const parent of existingSCC.parents){
+                    delete_element(parent.children, existingSCC);
+                }
+                for(const child of existingSCC.children){
+                    delete_element(child.parents, existingSCC);
+                }
+                delete this.SCCs[existingSCC.pseudo_wiki_tag];
+            } else {
+                delete_element(existingSCC.nodes, nodeAlreadyExists);
+            }
             delete this.nodes[wiki_tag];
             this.duplicated[wiki_tag] = [nodeAlreadyExists, node];
-        } else {
-            // TODO: update SCCs. (maybe merge existing SCCs)
-            // TODO: update tags.
+        } else { // new unique wiki tag.
+            const newSCC: SCC = {nodes: [node], parents: [], children: [], pseudo_wiki_tag: wiki_tag};
+            node.scc = newSCC;
+            for(const tag of node.metadata!.frontmatter!.tags){
+                if (tag in this.nodes){
+                    const parent = this.nodes[tag as string];
+                    newSCC.parents.push(parent.scc!);
+                    parent.scc!.children.push(newSCC);
+                    const parentTags = parent.metadata!.frontmatter!.tags;
+                    for(const parent_tag of parentTags){
+                        if (parent_tag in this.nodes
+                            && this.nodes[parent_tag as string].metadata!.frontmatter!["note-type"] != "category"
+                            && !node.metadata!.frontmatter!.tags.includes(parent_tag)){
+                            node.metadata!.frontmatter!.tags.push(parent_tag);
+                        }
+                    }
+                    for(const uncle of parent.scc!.nodes){
+                        node.parents.push(uncle);
+                        uncle.children.push(node);
+                    }
+                }
+            }
+            if (wiki_tag in this.outerTagRefs){
+                const wikiTagsToMerge: Set<string> = new Set();
+                const SCCsToMerge: Set<SCC> = new Set();
+                // This new entry would be a 'popular' one, who has already had some subscribers before it really comes.
+                // In this case, maybe some SCCs should be merged.
+                for(const child of this.outerTagRefs[wiki_tag]){
+                    // If new node (now) has some tags belongs to the subscribers (this.outerTagRefs[tag]), it means these tags have been spread to the new node.
+                    // Therefore, all the SCCs on this spread chain should be merged.
+                    child.parents.push(node);
+                    node.children.push(child);
+                    if (child.wiki_tag in node.metadata!.frontmatter!.tags){
+                        for(const cousin of child.scc!.nodes){
+                            wikiTagsToMerge.add(cousin.wiki_tag);
+                        }
+                    }
+                }
+                delete this.outerTagRefs[wiki_tag];
+            }
             this.nodes[wiki_tag] = node;
         }
         // this.summary['files'][newNoteFilePath] = frontmatter;
@@ -378,8 +440,8 @@ export class WikiLibrary{
     }
 
     async similarityAnalyze(wiki_tag: string, aliases: string[], titleEntities: string[]): Promise<SimilarityInfo[]>{
-        var similarities = this.nodes.map((fm) => {
-            const metadata = fm.metadata;
+        var similarityInfos = Object.values(this.nodes).map((node: Node) => {
+            const metadata = node.metadata;
             if (!metadata) return null;
             const frontmatter = metadata.frontmatter;
             if (!frontmatter) return null;
@@ -393,134 +455,134 @@ export class WikiLibrary{
                 similarity = Math.max(similarity, 0.7);
             }
             var intersection_size = intersection.size;
-            return {fm, similarity, intersection_size};
-        }).filter(item => item!= null);
+            return {fm: node, similarity, intersection_size};
+        }).filter(info => info!= null);
         console.log("DEBUG insert 0");
-        similarities = similarities.sort((a, b) => b.similarity - a.similarity).filter(item => item.similarity > 0.5 || item.intersection_size> 1);
-        return similarities;
+        similarityInfos = similarityInfos.sort((a, b) => b.similarity - a.similarity).filter(item => item.similarity > 0.5 || item.intersection_size> 1);
+        return similarityInfos;
     }
 
-    async refreshTagInheritance(fm: Node): Promise<void>{
-        // Not recursive.
-        const new_tags: Set<string> = new Set();
-        for (const tag of fm.metadata!.frontmatter!.tags){
-            if (tag in this.wiki_tag_dict){
-                const parents = this.wiki_tag_dict[tag];
-                if (parents.length == 1){
-                    const parent = parents[0];
-                    if (parent.metadata!.frontmatter!["note-type"] === "category") continue;
-                    for (const parent_tag of parent.metadata!.frontmatter!.tags){
-                        new_tags.add(parent_tag);
-                    }
-                } else {
-                    log("Warning: duplicated wiki tag inheritance. Skipped.");
-                }
-            }
-        }
-        for (const tag of new_tags){
-            if (!(tag in fm.metadata!.frontmatter!.tags)){
-                fm.metadata!.frontmatter!.tags.push(tag);
-            }
-        }
-    }
+    // async refreshTagInheritance(node: Node): Promise<void>{
+    //     // Not recursive.
+    //     const new_tags: Set<string> = new Set();
+    //     for (const tag of node.metadata!.frontmatter!.tags){
+    //         if (tag in this.wiki_tag_dict){
+    //             const parents = this.wiki_tag_dict[tag];
+    //             if (parents.length == 1){
+    //                 const parent = parents[0];
+    //                 if (parent.metadata!.frontmatter!["note-type"] === "category") continue;
+    //                 for (const parent_tag of parent.metadata!.frontmatter!.tags){
+    //                     new_tags.add(parent_tag);
+    //                 }
+    //             } else {
+    //                 log("Warning: duplicated wiki tag inheritance. Skipped.");
+    //             }
+    //         }
+    //     }
+    //     for (const tag of new_tags){
+    //         if (!(tag in node.metadata!.frontmatter!.tags)){
+    //             node.metadata!.frontmatter!.tags.push(tag);
+    //         }
+    //     }
+    // }
 
-    async refreshAllTagInheritance(): Promise<void>{
-        interface Node{
-            wiki_tag: string;
-            file: TFile;
-            metadata: CachedMetadata;
-            parents: string[];
-            children: string[];
-            processed: boolean;
-        }
-        interface SCC{ // Strongly connected component.
-            nodes: Node[];
-            processed: boolean;
-            parents: string[];
-            children: string[];
-        }
-        const nodes: {[wiki_tag: string]: Node} = {};
-        // Initialize graph.
-        for (const fm of this.nodes){
-            const metadata = fm.metadata;
-            if (!metadata) error("Metadata not found for file: "+fm.file.path);
-            const frontmatter = metadata!.frontmatter;
-            if (!frontmatter) error("Frontmatter not found for file: "+fm.file.path);
-            const wiki_tag = frontmatter!['wiki-tag'];
-            if (!wiki_tag) error("Wiki tag not found in frontmatter of file: "+fm.file.path);
-            const tags = frontmatter!.tags;
-            if (!tags) error("Tags not found in frontmatter of file: "+fm.file.path);
-            if (wiki_tag in this.duplicated_wiki_tags) {
-                // duplicated wiki tag. skip all.
-                continue;
-            }
-            nodes[wiki_tag] = {wiki_tag, file: fm.file, metadata: metadata!, parents: [], children: [], processed: false};
-        }
-        // Initialize 'parents' and 'children' fields.
-        for (const wiki_tag in nodes){
-            const node = nodes[wiki_tag];
-            const tags = node.metadata.frontmatter!.tags;
-            for (const tag of tags){
-                if (tag in nodes) {
-                    node.parents.push(tag);
-                    (nodes[tag] as Node).children.push(wiki_tag);
-                }
-            }
-        }
+    // async refreshAllTagInheritance(): Promise<void>{
+    //     interface Node{
+    //         wiki_tag: string;
+    //         file: TFile;
+    //         metadata: CachedMetadata;
+    //         parents: string[];
+    //         children: string[];
+    //         processed: boolean;
+    //     }
+    //     interface SCC{ // Strongly connected component.
+    //         nodes: Node[];
+    //         processed: boolean;
+    //         parents: string[];
+    //         children: string[];
+    //     }
+    //     const nodes: {[wiki_tag: string]: Node} = {};
+    //     // Initialize graph.
+    //     for (const fm of this.nodes){
+    //         const metadata = fm.metadata;
+    //         if (!metadata) error("Metadata not found for file: "+fm.file.path);
+    //         const frontmatter = metadata!.frontmatter;
+    //         if (!frontmatter) error("Frontmatter not found for file: "+fm.file.path);
+    //         const wiki_tag = frontmatter!['wiki-tag'];
+    //         if (!wiki_tag) error("Wiki tag not found in frontmatter of file: "+fm.file.path);
+    //         const tags = frontmatter!.tags;
+    //         if (!tags) error("Tags not found in frontmatter of file: "+fm.file.path);
+    //         if (wiki_tag in this.duplicated_wiki_tags) {
+    //             // duplicated wiki tag. skip all.
+    //             continue;
+    //         }
+    //         nodes[wiki_tag] = {wiki_tag, file: fm.file, metadata: metadata!, parents: [], children: [], processed: false};
+    //     }
+    //     // Initialize 'parents' and 'children' fields.
+    //     for (const wiki_tag in nodes){
+    //         const node = nodes[wiki_tag];
+    //         const tags = node.metadata.frontmatter!.tags;
+    //         for (const tag of tags){
+    //             if (tag in nodes) {
+    //                 node.parents.push(tag);
+    //                 (nodes[tag] as Node).children.push(wiki_tag);
+    //             }
+    //         }
+    //     }
 
-        var index_counter: number = 0;
-        const stack: string[] = [];
-        const on_stack: Set<string> = new Set();
-        const low_links: {[wiki_tag: string]: number} = {};
-        const indices: {[wiki_tag: string]: number} = {};
-        const sccs: SCC[] = [];
-        function strong_connect(wiki_tag: string): void{
-            // Set index and lowlink for current node.
-            indices[wiki_tag] = index_counter;
-            low_links[wiki_tag] = index_counter;
-            index_counter++;
-            stack.push(wiki_tag);
-            on_stack.add(wiki_tag);
-            // Consider successors of current node.
-            const node = nodes[wiki_tag];
-            for (const parent of node.parents){
-                if (!(parent in indices)){
-                    // Successor has not yet been visited; recurse on it.
-                    strong_connect(parent);
-                    low_links[wiki_tag] = Math.min(low_links[wiki_tag], low_links[parent]);
-                } else if (on_stack.has(parent)){
-                    // the successor is in stack and hence in the current SCC
-                    low_links[wiki_tag] = Math.min(low_links[wiki_tag], indices[parent]);
-                }
-            }
+    //     var index_counter: number = 0;
+    //     const stack: string[] = [];
+    //     const on_stack: Set<string> = new Set();
+    //     const low_links: {[wiki_tag: string]: number} = {};
+    //     const indices: {[wiki_tag: string]: number} = {};
+    //     const sccs: SCC[] = [];
+    //     function strong_connect(wiki_tag: string): void{
+    //         // Set index and lowlink for current node.
+    //         indices[wiki_tag] = index_counter;
+    //         low_links[wiki_tag] = index_counter;
+    //         index_counter++;
+    //         stack.push(wiki_tag);
+    //         on_stack.add(wiki_tag);
+    //         // Consider successors of current node.
+    //         const node = nodes[wiki_tag];
+    //         for (const parent of node.parents){
+    //             if (!(parent in indices)){
+    //                 // Successor has not yet been visited; recurse on it.
+    //                 strong_connect(parent);
+    //                 low_links[wiki_tag] = Math.min(low_links[wiki_tag], low_links[parent]);
+    //             } else if (on_stack.has(parent)){
+    //                 // the successor is in stack and hence in the current SCC
+    //                 low_links[wiki_tag] = Math.min(low_links[wiki_tag], indices[parent]);
+    //             }
+    //         }
             
-            // If current node is a root node, pop the stack and generate an SCC.
-            if (low_links[wiki_tag] === indices[wiki_tag]){
-                const scc: SCC = {nodes: [], processed: false, parents: [], children: []};
-                var w: string|undefined;
-                while (true){
-                    w = stack.pop();
-                    if (w === undefined) error("stack underflow");
-                    on_stack.delete(w!);
-                    const node = nodes[w!];
-                    scc.nodes.push(node);
-                    scc.parents = scc.parents.concat(node.parents);
-                    scc.children = scc.children.concat(node.children);
-                    if (w == wiki_tag) break;
-                }
-                scc.parents = Array.from(new Set(scc.parents)).filter(tag => !(tag in scc.nodes));
-                scc.children = Array.from(new Set(scc.children)).filter(tag => !(tag in scc.nodes));
-                sccs.push(scc);
-            }
-        }
+    //         // If current node is a root node, pop the stack and generate an SCC.
+    //         if (low_links[wiki_tag] === indices[wiki_tag]){
+    //             const scc: SCC = {nodes: [], processed: false, parents: [], children: []};
+    //             var w: string|undefined;
+    //             while (true){
+    //                 w = stack.pop();
+    //                 if (w === undefined) error("stack underflow");
+    //                 on_stack.delete(w!);
+    //                 const node = nodes[w!];
+    //                 scc.nodes.push(node);
+    //                 scc.parents = scc.parents.concat(node.parents);
+    //                 scc.children = scc.children.concat(node.children);
+    //                 if (w == wiki_tag) break;
+    //             }
+    //             scc.parents = Array.from(new Set(scc.parents)).filter(tag => !(tag in scc.nodes));
+    //             scc.children = Array.from(new Set(scc.children)).filter(tag => !(tag in scc.nodes));
+    //             sccs.push(scc);
+    //         }
+    //     }
 
-        // Find all SCCs.
-        for (const wiki_tag in nodes){
-            if (!(wiki_tag in indices)){
-                strong_connect(wiki_tag);
-            }
-        }
-    }
+    //     // Find all SCCs.
+    //     for (const wiki_tag in nodes){
+    //         if (!(wiki_tag in indices)){
+    //             strong_connect(wiki_tag);
+    //         }
+    //     }
+    // }
 
     async refresh(): Promise<void>{
         // TODO
