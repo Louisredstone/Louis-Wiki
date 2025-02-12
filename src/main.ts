@@ -14,10 +14,7 @@ export interface LouisWikiPluginSettings {
 const DEFAULT_SETTINGS: LouisWikiPluginSettings = {
 	wikiFolder: 'Wiki',
 	tagAliasEnabled: false,
-	entryTemplate: `
-#施工中
-
-{{title}}
+	entryTemplate: `{{title}}
 
 # 相关链接
 \`\`\`dataviewjs

@@ -80,6 +80,14 @@ export function delete_element(arr: any[], element: any): any[] {
 	return arr;
 }
 
+export function equal(a: Set<string>, b: Set<string>): boolean{
+	if (a.size !== b.size) return false;
+	for (var elem of a){
+		if (!b.has(elem)) return false;
+	}
+	return true;
+}
+
 // get_sub_folders_by_path = (obsidian, vault, folderPath) => {
 //     tFolder = vault.getFolderByPath(folderPath);
 //     return get_sub_folders(obsidian, tFolder);

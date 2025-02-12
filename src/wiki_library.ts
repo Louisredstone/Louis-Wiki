@@ -2,7 +2,7 @@
 // update wiki library
 
 import { App, Vault, Notice, TFolder, TFile, Modal, ButtonComponent, parseYaml, stringifyYaml, getFrontMatterInfo, TAbstractFile } from 'obsidian';
-import {log, error, basename, open_file, open_file_by_path, get_sub_folders, delete_element} from './utils';
+import {log, error, basename, open_file, open_file_by_path, get_sub_folders, delete_element, equal} from './utils';
 import { yesNoPrompt } from './gui/yesNoPrompt';
 import { suggester } from './gui/suggester';
 import { LouisWikiPluginSettings } from './main'
@@ -12,10 +12,13 @@ type Dict = {[key: string]: any};
 class Node{
     file: TFile;
     frontmatter: Dict;
+    inheritTags: Set<string>;
+    original_inheritTags: Set<string>;
+    bodyContentInfo: {___: number|null, inheritTagsStart: number|null, mainContentStart: number|null};
+
     parents: Node[];
     children: Node[];
     scc: SCC|null;
-    // wiki_tag: string;
 
     frontmatter_modified: boolean = false;
     get wiki_tag(): string {return this.frontmatter['wiki-tag'];}
@@ -25,7 +28,7 @@ class Node{
         console.debug("[IN] Node.createAsync()")
         console.debug("file: "+file.path+", wiki_tag: "+wiki_tag)
         const node = new Node(file, wiki_tag);
-        await node.init_frontmatter();
+        await node.init_frontmatter_and_inherit_tags();
         if (wiki_tag !== null) node.wiki_tag = wiki_tag;
         console.debug("[OUT] Node.createAsync()")
         return node;
@@ -38,9 +41,9 @@ class Node{
         this.scc = scc;
     }
 
-    async init_frontmatter(): Promise<void>{
+    async init_frontmatter_and_inherit_tags(): Promise<void>{
         // TODO: check if cachedMetadata is available
-        console.debug("[IN] Node.init_frontmatter()")
+        console.debug("[IN] Node.init_frontmatter_and_inherit_tags()")
         console.debug("Reading content of file...")
         const content = await this.file.vault.read(this.file);
         console.debug("Content of file read.")
@@ -53,10 +56,36 @@ class Node{
         const tags: string[] = [];
         frontmatter.tags.map((tag: string) => {tag.startsWith('#')? [tags.push(tag.slice(1)), frontmatter_modified = true] : tags.push(tag)})
         frontmatter.tags = tags;
-        // TODO: frontmatter.original_tags
+        const lines = content.slice(frontmatterInfo.contentStart).split('\n');
+        const bodyContentInfo: {___: number|null, inheritTagsStart: number|null, mainContentStart: number|null} = {___: null, inheritTagsStart: null, mainContentStart: null};
+        // '___' for the first '---' line.
+        for(var i = 0; i < lines.length; i++){
+            if (lines[i].trim() === "") continue;
+            if (!bodyContentInfo.inheritTagsStart){
+                // match ___
+                if (!bodyContentInfo.___ && lines[i].match(/^\s*-{3,}\s*$/)){
+                    bodyContentInfo.___ = i;
+                    continue;
+                }
+                // match inheritTagsStart
+                if (lines[i].match(/^\s*(#[^\s]+\s*)+\s*$/) && lines[i+1].trim() === ''){
+                    bodyContentInfo.inheritTagsStart = i;
+                    continue;
+                }
+            }
+            // match mainContentStart
+            bodyContentInfo.mainContentStart = i;
+            break;
+        }
         this.frontmatter = frontmatter as Dict;
         this.frontmatter_modified = frontmatter_modified;
-        console.debug("[OUT] Node.init_frontmatter()")
+        this.bodyContentInfo = bodyContentInfo;
+        if (bodyContentInfo.inheritTagsStart)
+            this.original_inheritTags = new Set(lines[bodyContentInfo.inheritTagsStart].trim().split(/\s+/).map(tag => tag.trim().slice(1)));
+        else
+            this.original_inheritTags = new Set();
+        this.inheritTags = new Set();
+        console.debug("[OUT] Node.init_frontmatter_and_inherit_tags()")
     }
 
     add(field: string, value: any){
@@ -82,16 +111,28 @@ class Node{
         this.frontmatter_modified = true;
     }
 
-    async save_frontmatter(): Promise<void>{
-        console.debug("[SKIP] Node.save_frontmatter() skipped because no frontmatter has been modified.")
-        if (!this.frontmatter_modified) return;
-        console.debug("[IN] Node.save_frontmatter()")
+    async save_frontmatter_and_inherit_tags(): Promise<void>{
+        const inheritTags_modified = !equal(this.inheritTags, this.original_inheritTags);
+        if (!this.frontmatter_modified && !inheritTags_modified) {
+            console.debug("[SKIP] Node.save_frontmatter_and_inherit_tags() skipped because no frontmatter or inherit tags has been modified.")
+            return;
+        }
+        console.debug("[IN] Node.save_frontmatter_and_inherit_tags()")
         const content = await this.file.vault.read(this.file);
         const frontmatterInfo = getFrontMatterInfo(content);
         const {from: frontmatterStart, contentStart} = frontmatterInfo;
-        await this.file.vault.modify(this.file, content.slice(0, frontmatterStart) + stringifyYaml(this.frontmatter) + content.slice(contentStart));
+        const lines = content.slice(contentStart).split('\n');
+        var newBodyContent = "";
+        // if (this.bodyContentInfo.___) newBodyContent += "---\n";
+        newBodyContent += "---\n";
+        if (inheritTags_modified) newBodyContent += [...this.inheritTags].map(tag => `#${tag}`).join(' ') + '\n\n';
+        else if (this.bodyContentInfo.inheritTagsStart) newBodyContent += lines[this.bodyContentInfo.inheritTagsStart] + '\n\n';
+        if (this.bodyContentInfo.mainContentStart) newBodyContent += lines.slice(this.bodyContentInfo.mainContentStart).join('\n');
+        // await this.file.vault.modify(this.file, content.slice(0, frontmatterStart) + stringifyYaml(this.frontmatter) + newBodyContent);
+        await this.file.vault.modify(this.file, "---\n" + stringifyYaml(this.frontmatter) + newBodyContent);
         this.frontmatter_modified = false;
-        console.debug("[OUT] Node.save_frontmatter()")
+        this.inheritTags = new Set();
+        console.debug("[OUT] Node.save_frontmatter_and_inherit_tags()")
     }
 }
 
@@ -150,7 +191,7 @@ export class WikiLibrary{
         const wikiLibrary = new WikiLibrary(app, settings);
         await wikiLibrary.init_folders();
         await wikiLibrary.init_graph();
-        wikiLibrary.apply_tag_inheritance();
+        await wikiLibrary.apply_tag_inheritance(true);
         await wikiLibrary.report_if_necessary();
         log("Wiki library initialized successfully with: \n- "+Object.keys(wikiLibrary.nodes).length+" nodes\n- "+Object.keys(wikiLibrary.SCCs).length+" SCCs\n- "+wikiLibrary.wikiEntries.length+" wiki entries\n- "+wikiLibrary.disambiguationNotes.length+" disambiguation notes\n- "+wikiLibrary.categories.length+" categories\n- "+wikiLibrary.otherTypeNotes.length+" other type notes\n- "+wikiLibrary.notesWithoutFrontmatter.length+" notes without frontmatter\n- "+Object.keys(wikiLibrary.duplicated).length+" duplicated wiki entries\n- "+Object.keys(wikiLibrary.outerTagRefs).length+" outer tag references", 7);
         console.debug("nodes: "+Object.keys(wikiLibrary.nodes).join(", "));
@@ -360,28 +401,33 @@ export class WikiLibrary{
         console.debug("[OUT] WikiLibrary.init_graph()")
     }
 
-    apply_tag_inheritance(){
+    async apply_tag_inheritance(save: boolean = false){
         console.debug("[IN] WikiLibrary.apply_tag_inheritance()")
-        function apply_tag_inheritance_rec(scc: SCC, tags: string[] = []): void{
-            console.debug("[IN] WikiLibrary.apply_tag_inheritance_rec()");
-            console.debug("scc.pseudo_wiki_tag: "+scc.pseudo_wiki_tag);
-            console.debug("incoming tags: "+tags.join(', '));
-            // Inside SCC, share all tags.
-            for (const node of scc.nodes){
-                const node_tags = node.frontmatter.tags;
-                node.set_frontmatter('tags', node_tags.concat(tags.filter(tag => !node_tags.includes(tag))));
-            }
-            tags.push(scc.pseudo_wiki_tag);
-            // Spread tags to children.
-            for (const child of scc.children){
-                apply_tag_inheritance_rec(child, scc.nodes.map(node => node.wiki_tag));
-            }
-            console.debug("[OUT] WikiLibrary.apply_tag_inheritance_rec()")
-        }
         for (const scc of Object.values(this.SCCs).filter(scc => scc.parents.length == 0)){
-            apply_tag_inheritance_rec(scc);
+            await this.apply_tag_inheritance_rec(scc, null, save);
         }
         console.debug("[OUT] WikiLibrary.apply_tag_inheritance()")
+    }
+
+    async apply_tag_inheritance_rec(scc: SCC, inheritTags: Set<string>|null = null, save: boolean = false){
+        if (inheritTags == null) inheritTags = new Set();
+        console.debug("[IN] WikiLibrary.apply_tag_inheritance_rec()");
+        console.debug("Processing SCC with pseudo_wiki_tag: "+scc.pseudo_wiki_tag);
+        console.debug("Inherit tags: "+[...inheritTags].join(', '));
+        // Inside SCC, share all tags.
+        for (const node of scc.nodes){
+            // const node_tags = node.frontmatter.tags;
+            // node.set_frontmatter('tags', node_tags.concat(tags.filter(tag => !node_tags.includes(tag))));
+            console.debug("Processing node: "+node.file.path);
+            node.inheritTags = new Set(inheritTags);
+            if (save) await node.save_frontmatter_and_inherit_tags();
+        }
+        scc.nodes.forEach(node => inheritTags.add(node.wiki_tag));
+        // Spread tags to children.
+        for (const child of scc.children){
+            await this.apply_tag_inheritance_rec(child, inheritTags, save);
+        }
+        console.debug("[OUT] WikiLibrary.apply_tag_inheritance_rec()")
     }
 
     async report_if_necessary(): Promise<void>{
@@ -465,12 +511,12 @@ export class WikiLibrary{
             aliases: ['#'+wiki_tag].concat(aliases),
             tags: [wiki_tag].concat(tags),
             "wiki-tag": wiki_tag,
-            description: description        
+            description: description
         };
 
         console.debug("Creating new note...");
         log("Creating new wiki note: "+title);
-        const content = '---\n' + stringifyYaml(frontmatter) + '---\n' + this.entryTemplate.replace('{{title}}', title);
+        const content = '---\n' + stringifyYaml(frontmatter) + '\n---\n' + this.entryTemplate.replace('{{title}}', title);
         // const content = this.entryTemplate.replace('{{title}}', title);
 
         const newNoteFilePath = folder.path+'/'+title+'.md'
@@ -538,11 +584,14 @@ export class WikiLibrary{
                 console.debug("New entry is subscribed, spread tags to subscribers.");
                 // This new entry would be a 'subscribed' one, who has already had some subscribers before it really comes.
                 // In this case, maybe some SCCs should be merged.
-                for(const child of this.outerTagRefs[wiki_tag]){
+                for(const subscriber of this.outerTagRefs[wiki_tag]){
                     // If new node (now) has some tags belongs to the subscribers (this.outerTagRefs[tag]), it means these tags have been spread to the new node.
                     // Therefore, all the SCCs on this spread chain should be merged.
-                    child.parents.push(newNode);
-                    newNode.children.push(child);
+                    console.debug("Processing subscriber: "+subscriber.file.path);
+                    subscriber.parents.push(newNode);
+                    subscriber.scc!.parents.push(newSCC);
+                    newNode.children.push(subscriber);
+                    newSCC.children.push(subscriber.scc!);
                 }
                 delete this.outerTagRefs[wiki_tag];
                 var super_index_counter: number = 0;
@@ -598,7 +647,7 @@ export class WikiLibrary{
                         console.debug("super_scc: "+super_scc.map(scc => scc ? scc.pseudo_wiki_tag : 'undefined|null').join(', '));
                         // merge SCCs in super_scc.
                         const newParentSCCs: Set<SCC> = new Set(newSCC.parents);
-                        const newChildSCCs: Set<SCC> = new Set();
+                        const newChildSCCs: Set<SCC> = new Set(newSCC.children);
                         for(const scc of super_scc){
                             console.debug("Processing scc: (pseudo_wiki_tag: "+scc.pseudo_wiki_tag +")");
                             if (scc === newSCC) continue;
@@ -623,6 +672,9 @@ export class WikiLibrary{
                         return;
                     }
                 }
+                const newInheritTags: Set<string> = new Set();
+                newSCC.nodes.forEach(node => node.inheritTags.forEach(tag => newInheritTags.add(tag)));
+                await this.apply_tag_inheritance_rec(newSCC, newInheritTags, true);
             }
             this.nodes[wiki_tag] = newNode;
             this.SCCs[wiki_tag] = newSCC;
@@ -670,30 +722,29 @@ export class WikiLibrary{
 }
 
 async function foundMultipleSimilarNotesPrompt(app: App, similarities: SimilarityInfo[]): Promise<boolean|null> {
-    var choice: boolean|null = null;
-    const modal = new FoundMultipleSimilarNotesModal(app, similarities, async () => {
-        choice = true;
-    }, async () => {
-        choice = false;
-    });
-    return new Promise(resolve => {
-        modal.open();
-        setTimeout(() => {
-            resolve(choice);
-        }, 10000);
-    });
+    try{
+        const modal = new FoundMultipleSimilarNotesModal(app, similarities);
+        return await modal.promise;
+    } catch {
+        return null;
+    }
 }
 
 class FoundMultipleSimilarNotesModal extends Modal {
+    private resolvePromise: (value: boolean) => void;
+	private rejectPromise: (reason?: any) => void;
+	public promise: Promise<boolean>;
+	private resolved: boolean;
     similaritiesInfo: SimilarityInfo[];
-    continueCallback: () => Promise<void>;
-    cancelCallback: () => Promise<void>;
 
-    constructor(app: App, similaritiesInfo: SimilarityInfo[], continueCallback: () => Promise<void> = async () => {}, cancelCallback: () => Promise<void> = async () => {}) {
+    constructor(app: App, similaritiesInfo: SimilarityInfo[]) {
         super(app);
         this.similaritiesInfo = similaritiesInfo;
-        this.continueCallback = continueCallback;
-        this.cancelCallback = cancelCallback;
+        this.promise = new Promise<boolean>((resolve, reject) => {
+			this.resolvePromise = resolve;
+			this.rejectPromise = reject;
+		});
+        this.open();
     }
 
     onOpen(): void {
@@ -725,19 +776,22 @@ class FoundMultipleSimilarNotesModal extends Modal {
         const continueButton = new ButtonComponent(buttonRow);
         continueButton.setButtonText("Continue");
         continueButton.onClick(async () => {
+            this.resolved = true;
+            this.resolvePromise(true);
             this.close();
-            await this.continueCallback();
         });
         const cancelButton = new ButtonComponent(buttonRow);
         cancelButton.setButtonText("Cancel");
         cancelButton.onClick(async () => {
+            this.resolved = true;
+            this.resolvePromise(false);
             this.close();
-            await this.cancelCallback();
         });
     }
 
     onClose(): void {
         const { contentEl } = this;
         contentEl.empty();
+        if (!this.resolved) this.rejectPromise("no input given.");
     }
 }
