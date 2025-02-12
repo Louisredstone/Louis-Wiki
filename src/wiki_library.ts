@@ -23,6 +23,7 @@ class Node{
     frontmatter_modified: boolean = false;
     get wiki_tag(): string {return this.frontmatter['wiki-tag'];}
     set wiki_tag(value: string) {if (value!== this.frontmatter['wiki-tag']) this.set_frontmatter('wiki-tag', value);}
+    get tags(): string[] {return this.frontmatter['tags'];}
 
     static async createAsync(file: TFile, wiki_tag: string|null = null): Promise<Node>{
         console.debug("[IN] Node.createAsync()")
@@ -44,6 +45,7 @@ class Node{
     async init_frontmatter_and_inherit_tags(): Promise<void>{
         // TODO: check if cachedMetadata is available
         console.debug("[IN] Node.init_frontmatter_and_inherit_tags()")
+        console.debug("file: "+this.file.path);
         console.debug("Reading content of file...")
         const content = await this.file.vault.read(this.file);
         console.debug("Content of file read.")
@@ -57,18 +59,20 @@ class Node{
         frontmatter.tags.map((tag: string) => {tag.startsWith('#')? [tags.push(tag.slice(1)), frontmatter_modified = true] : tags.push(tag)})
         frontmatter.tags = tags;
         const lines = content.slice(frontmatterInfo.contentStart).split('\n');
+        // It seems that 'lines' does not contain '---', but Obsidian API Doc says it does.
+        console.debug("lines: \n"+lines.join('\n'));
         const bodyContentInfo: {___: number|null, inheritTagsStart: number|null, mainContentStart: number|null} = {___: null, inheritTagsStart: null, mainContentStart: null};
         // '___' for the first '---' line.
         for(var i = 0; i < lines.length; i++){
             if (lines[i].trim() === "") continue;
-            if (!bodyContentInfo.inheritTagsStart){
+            if (bodyContentInfo.inheritTagsStart === null){
                 // match ___
-                if (!bodyContentInfo.___ && lines[i].match(/^\s*-{3,}\s*$/)){
+                if (bodyContentInfo.___ === null && lines[i].match(/^\s*-{3,}\s*$/)){
                     bodyContentInfo.___ = i;
                     continue;
                 }
                 // match inheritTagsStart
-                if (lines[i].match(/^\s*(#[^\s]+\s*)+\s*$/) && lines[i+1].trim() === ''){
+                if (lines[i].match(/^\s*\[Auto\]\:\s*(#[^\s]+\s*)+\s*$/) && lines[i+1].trim() === ''){
                     bodyContentInfo.inheritTagsStart = i;
                     continue;
                 }
@@ -77,13 +81,17 @@ class Node{
             bodyContentInfo.mainContentStart = i;
             break;
         }
+        console.debug("bodyContentInfo: "+JSON.stringify(bodyContentInfo));
         this.frontmatter = frontmatter as Dict;
         this.frontmatter_modified = frontmatter_modified;
         this.bodyContentInfo = bodyContentInfo;
-        if (bodyContentInfo.inheritTagsStart)
-            this.original_inheritTags = new Set(lines[bodyContentInfo.inheritTagsStart].trim().split(/\s+/).map(tag => tag.trim().slice(1)));
-        else
+        if (bodyContentInfo.inheritTagsStart === null){
             this.original_inheritTags = new Set();
+        }
+        else{
+            const match = lines[bodyContentInfo.inheritTagsStart].match(/^\s*\[Auto\]\:(.*)$/);
+            this.original_inheritTags = new Set(match![1].trim().split(/\s+/).map(tag => tag.trim().slice(1)));
+        }
         this.inheritTags = new Set();
         console.debug("[OUT] Node.init_frontmatter_and_inherit_tags()")
     }
@@ -105,6 +113,13 @@ class Node{
         else error("Invalid field: "+field);
     }
 
+    add_inherit_tags(tags: string[]|Set<string>): void{
+        for(const tag of tags){
+            if (!this.tags.includes(tag))
+                this.inheritTags.add(tag);
+        }
+    }
+
     set_frontmatter(field: string, value: any){
         // if (field in this.frontmatter && this.frontmatter[field] === value) return;
         this.frontmatter[field] = value;
@@ -115,6 +130,8 @@ class Node{
         const inheritTags_modified = !equal(this.inheritTags, this.original_inheritTags);
         if (!this.frontmatter_modified && !inheritTags_modified) {
             console.debug("[SKIP] Node.save_frontmatter_and_inherit_tags() skipped because no frontmatter or inherit tags has been modified.")
+            console.debug("this.inheritTags: "+JSON.stringify(this.inheritTags));
+            console.debug("this.original_inheritTags: "+JSON.stringify(this.original_inheritTags));
             return;
         }
         console.debug("[IN] Node.save_frontmatter_and_inherit_tags()")
@@ -125,12 +142,18 @@ class Node{
         var newBodyContent = "";
         // if (this.bodyContentInfo.___) newBodyContent += "---\n";
         newBodyContent += "---\n";
-        if (inheritTags_modified) newBodyContent += [...this.inheritTags].map(tag => `#${tag}`).join(' ') + '\n\n';
-        else if (this.bodyContentInfo.inheritTagsStart) newBodyContent += lines[this.bodyContentInfo.inheritTagsStart] + '\n\n';
-        if (this.bodyContentInfo.mainContentStart) newBodyContent += lines.slice(this.bodyContentInfo.mainContentStart).join('\n');
+        if (inheritTags_modified) {
+            const inheritTagList: string[] = [...this.inheritTags].map(tag => `#${tag}`);
+            if (inheritTagList.length > 0)
+                newBodyContent += "[Auto]: " + inheritTagList.join(' ') + '\n\n';
+        }
+        else if (this.bodyContentInfo.inheritTagsStart) 
+            newBodyContent += lines[this.bodyContentInfo.inheritTagsStart] + '\n\n';
+        if (this.bodyContentInfo.mainContentStart !== null) newBodyContent += lines.slice(this.bodyContentInfo.mainContentStart).join('\n');
         // await this.file.vault.modify(this.file, content.slice(0, frontmatterStart) + stringifyYaml(this.frontmatter) + newBodyContent);
         await this.file.vault.modify(this.file, "---\n" + stringifyYaml(this.frontmatter) + newBodyContent);
         this.frontmatter_modified = false;
+        this.original_inheritTags = this.inheritTags;
         this.inheritTags = new Set();
         console.debug("[OUT] Node.save_frontmatter_and_inherit_tags()")
     }
@@ -189,10 +212,7 @@ export class WikiLibrary{
     static async createAsync(app: App, settings: LouisWikiPluginSettings): Promise<WikiLibrary>{
         console.debug("[IN] WikiLibrary.createAsync()")
         const wikiLibrary = new WikiLibrary(app, settings);
-        await wikiLibrary.init_folders();
-        await wikiLibrary.init_graph();
-        await wikiLibrary.apply_tag_inheritance(true);
-        await wikiLibrary.report_if_necessary();
+        await wikiLibrary.initialize();
         log("Wiki library initialized successfully with: \n- "+Object.keys(wikiLibrary.nodes).length+" nodes\n- "+Object.keys(wikiLibrary.SCCs).length+" SCCs\n- "+wikiLibrary.wikiEntries.length+" wiki entries\n- "+wikiLibrary.disambiguationNotes.length+" disambiguation notes\n- "+wikiLibrary.categories.length+" categories\n- "+wikiLibrary.otherTypeNotes.length+" other type notes\n- "+wikiLibrary.notesWithoutFrontmatter.length+" notes without frontmatter\n- "+Object.keys(wikiLibrary.duplicated).length+" duplicated wiki entries\n- "+Object.keys(wikiLibrary.outerTagRefs).length+" outer tag references", 7);
         console.debug("nodes: "+Object.keys(wikiLibrary.nodes).join(", "));
         console.debug("SCCs: "+Object.keys(wikiLibrary.SCCs).join(", "));
@@ -205,6 +225,15 @@ export class WikiLibrary{
         console.debug("outerTagRefs: "+Object.keys(wikiLibrary.outerTagRefs).join(", "));
         console.debug("[OUT] WikiLibrary.createAsync()")
         return wikiLibrary;
+    }
+
+    async initialize(): Promise<void> {
+        await this.init_folders();
+        await this.init_graph();
+        console.log("[DEBUG] nodes: \n"+Object.entries(this.nodes).map(([k,v])=>k+" -> "+v.parents.map(p=>p.wiki_tag).join(', ')).join("\n"));
+        console.log("[DEBUG] SCCs: \n"+Object.entries(this.SCCs).map(([k,v])=>k+"("+v.nodes.map(n=>n.wiki_tag).join(', ')+") -> "+v.parents.map(p=>p.pseudo_wiki_tag).join(", ")).join("\n"));
+        await this.apply_tag_inheritance(true);
+        await this.report_if_necessary();
     }
 
     async init_folders(): Promise<void> {
@@ -403,6 +432,9 @@ export class WikiLibrary{
 
     async apply_tag_inheritance(save: boolean = false){
         console.debug("[IN] WikiLibrary.apply_tag_inheritance()")
+        for (const node of Object.values(this.nodes)){
+            node.inheritTags = new Set();
+        }
         for (const scc of Object.values(this.SCCs).filter(scc => scc.parents.length == 0)){
             await this.apply_tag_inheritance_rec(scc, null, save);
         }
@@ -411,6 +443,7 @@ export class WikiLibrary{
 
     async apply_tag_inheritance_rec(scc: SCC, inheritTags: Set<string>|null = null, save: boolean = false){
         if (inheritTags == null) inheritTags = new Set();
+        else inheritTags = new Set([...inheritTags]); // make a copy
         console.debug("[IN] WikiLibrary.apply_tag_inheritance_rec()");
         console.debug("Processing SCC with pseudo_wiki_tag: "+scc.pseudo_wiki_tag);
         console.debug("Inherit tags: "+[...inheritTags].join(', '));
@@ -419,9 +452,11 @@ export class WikiLibrary{
             // const node_tags = node.frontmatter.tags;
             // node.set_frontmatter('tags', node_tags.concat(tags.filter(tag => !node_tags.includes(tag))));
             console.debug("Processing node: "+node.file.path);
-            node.inheritTags = new Set(inheritTags);
+            // node.inheritTags = new Set([...node.inheritTags, ...inheritTags]);
+            node.add_inherit_tags(inheritTags);
             if (save) await node.save_frontmatter_and_inherit_tags();
         }
+        // Add tags of this SCC to inheritTags, in order to spread them to children.
         scc.nodes.forEach(node => inheritTags.add(node.wiki_tag));
         // Spread tags to children.
         for (const child of scc.children){
@@ -710,10 +745,6 @@ export class WikiLibrary{
         }).filter(info => info!= null);
         similarityInfos = similarityInfos.sort((a, b) => b.similarity - a.similarity).filter(item => item.similarity > 0.5 || item.intersection_size> 1);
         return similarityInfos;
-    }
-
-    async refresh(): Promise<void>{
-        // TODO
     }
 
     async merge(nodes: Node[]): Promise<void>{
