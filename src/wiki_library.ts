@@ -49,8 +49,13 @@ class Node{
         if (!frontmatter){
             throw new Error("frontmatter is null or undefined after parseYaml()");
         }
+        var frontmatter_modified = false;
+        const tags: string[] = [];
+        frontmatter.tags.map((tag: string) => {tag.startsWith('#')? [tags.push(tag.slice(1)), frontmatter_modified = true] : tags.push(tag)})
+        frontmatter.tags = tags;
+        // TODO: frontmatter.original_tags
         this.frontmatter = frontmatter as Dict;
-        this.frontmatter_modified = false;
+        this.frontmatter_modified = frontmatter_modified;
         console.debug("[OUT] Node.init_frontmatter()")
     }
 
@@ -147,7 +152,16 @@ export class WikiLibrary{
         await wikiLibrary.init_graph();
         wikiLibrary.apply_tag_inheritance();
         await wikiLibrary.report_if_necessary();
-        log("Wiki library initialized successfully with: \n- "+Object.keys(wikiLibrary.nodes).length+" nodes\n- "+Object.keys(wikiLibrary.SCCs).length+" SCCs\n- "+wikiLibrary.wikiEntries.length+" wiki entries\n- "+wikiLibrary.disambiguationNotes.length+" disambiguation notes\n- "+wikiLibrary.categories.length+" categories\n- "+wikiLibrary.otherTypeNotes.length+" other type notes\n- "+wikiLibrary.notesWithoutFrontmatter.length+" notes without frontmatter\n- "+Object.keys(wikiLibrary.duplicated).length+" duplicated wiki entries.", 7);
+        log("Wiki library initialized successfully with: \n- "+Object.keys(wikiLibrary.nodes).length+" nodes\n- "+Object.keys(wikiLibrary.SCCs).length+" SCCs\n- "+wikiLibrary.wikiEntries.length+" wiki entries\n- "+wikiLibrary.disambiguationNotes.length+" disambiguation notes\n- "+wikiLibrary.categories.length+" categories\n- "+wikiLibrary.otherTypeNotes.length+" other type notes\n- "+wikiLibrary.notesWithoutFrontmatter.length+" notes without frontmatter\n- "+Object.keys(wikiLibrary.duplicated).length+" duplicated wiki entries\n- "+Object.keys(wikiLibrary.outerTagRefs).length+" outer tag references", 7);
+        console.debug("nodes: "+Object.keys(wikiLibrary.nodes).join(", "));
+        console.debug("SCCs: "+Object.keys(wikiLibrary.SCCs).join(", "));
+        console.debug("wikiEntries: "+wikiLibrary.wikiEntries.map(n=>n.file.path).join(", "));
+        console.debug("disambiguationNotes: "+wikiLibrary.disambiguationNotes.map(n=>n.file.path).join(", "));
+        console.debug("categories: "+wikiLibrary.categories.map(n=>n.file.path).join(", "));
+        console.debug("otherTypeNotes: "+wikiLibrary.otherTypeNotes.map(n=>n.file.path).join(", "));
+        console.debug("notesWithoutFrontmatter: "+wikiLibrary.notesWithoutFrontmatter.map(n=>n.path).join(", "));
+        console.debug("duplicated: "+Object.keys(wikiLibrary.duplicated).join(", "));
+        console.debug("outerTagRefs: "+Object.keys(wikiLibrary.outerTagRefs).join(", "));
         console.debug("[OUT] WikiLibrary.createAsync()")
         return wikiLibrary;
     }
@@ -449,12 +463,13 @@ export class WikiLibrary{
             date: new Date().toLocaleDateString(),
             time: new Date().toLocaleTimeString(),
             aliases: ['#'+wiki_tag].concat(aliases),
-            tags: [wiki_tag].concat(tags).map(tag => '#'+tag),
+            tags: [wiki_tag].concat(tags),
             "wiki-tag": wiki_tag,
             description: description        
         };
 
         console.debug("Creating new note...");
+        log("Creating new wiki note: "+title);
         const content = '---\n' + stringifyYaml(frontmatter) + '---\n' + this.entryTemplate.replace('{{title}}', title);
         // const content = this.entryTemplate.replace('{{title}}', title);
 
@@ -559,9 +574,10 @@ export class WikiLibrary{
                         var w: string|undefined;
                         while(true){
                             w = super_stack.pop();
+                            console.debug("w: "+w);
                             if (w === undefined) error("stack underflow");
                             super_on_stack.delete(w!);
-                            const scc = w!== newSCC.pseudo_wiki_tag ? newSCC : SCCs[w!];
+                            const scc = w == newSCC.pseudo_wiki_tag ? newSCC : SCCs[w!];
                             super_scc.push(scc);
                             if (w == pseudo_wiki_tag) break;
                         }
@@ -579,6 +595,7 @@ export class WikiLibrary{
                     console.debug("New SCC has only one SCC, merge it with the other members of the Super SCC.");
                     if (wiki_tag in super_sccs){
                         const super_scc = super_sccs[wiki_tag];
+                        console.debug("super_scc: "+super_scc.map(scc => scc ? scc.pseudo_wiki_tag : 'undefined|null').join(', '));
                         // merge SCCs in super_scc.
                         const newParentSCCs: Set<SCC> = new Set(newSCC.parents);
                         const newChildSCCs: Set<SCC> = new Set();
