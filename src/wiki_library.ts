@@ -89,8 +89,12 @@ class Node{
             this.original_inheritTags = new Set();
         }
         else{
-            const match = lines[bodyContentInfo.inheritTagsStart].match(/^\s*\[Auto\]\:(.*)$/);
-            this.original_inheritTags = new Set(match![1].trim().split(/\s+/).map(tag => tag.trim().slice(1)));
+            const match = lines[bodyContentInfo.inheritTagsStart].match(/^\s*\[Auto\]\:\s*((#[^\s]+\s*)+)\s*$/);
+            if (match){
+                this.original_inheritTags = new Set(match![1].trim().split(/\s+/).map(tag => tag.trim().slice(1)));
+            } else {
+                throw new Error("Weird error: inheritTags line not matched.");
+            }
         }
         this.inheritTags = new Set();
         console.debug("[OUT] Node.init_frontmatter_and_inherit_tags()")
