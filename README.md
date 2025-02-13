@@ -5,8 +5,8 @@ This is Louis' Wiki plugin for Obsidian (https://obsidian.md).
 ## Features
 
 - Create a new wiki entry.
-- You may choose a folder where the new wiki entry belongs to.
-- Automatically update inheritTags when enabling the plugin. You may also manually do it by command 'Refresh wiki library'.
+- Choose a folder of new entry.
+- Automatically update inheritTags.
 
 ## Usage
 
@@ -46,6 +46,8 @@ Inherit tags is the first line like `[Auto]: #tag1, #tag2`. (If there is no such
 When you create a new wiki entry, use 'tags' in the frontmatter to specify strict subordinate relationships between entries. 
 
 For example, entry 'Louis Wiki Plugin' has a tag 'Obsidian Plugin', and entry 'Obsidian Plugin' has a tag 'Obsidian'. Then, 'Louis Wiki Plugin' will inherit the tag 'Obsidian' from 'Obsidian Plugin'.
+
+InheritTags are automatically updated when enabling the plugin. You may also manually do it by command 'Refresh wiki library'
 
 ## TODO List
 
