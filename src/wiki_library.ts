@@ -52,7 +52,7 @@ class Node{
         const frontmatterInfo = getFrontMatterInfo(content);
         const frontmatter = parseYaml(frontmatterInfo.frontmatter);
         if (!frontmatter){
-            throw new Error("frontmatter is null or undefined after parseYaml()");
+            throw new Error("Frontmatter of file '"+this.file.path+"' is null or undefined after parseYaml()");
         }
         var frontmatter_modified = false;
         const tags: string[] = [];
@@ -179,6 +179,7 @@ interface SimilarityInfo{
 export class WikiLibrary{
     app: App;
     debug: boolean = false;
+    initialized: boolean = false;
     rootFolderPath: string;
     rootFolder: TFolder;
     folders: TFolder[] = [];
@@ -200,7 +201,7 @@ export class WikiLibrary{
     outerTagRefs: {[tag: string]: Node[]} = {};
     
     constructor(app: App, settings: LouisWikiPluginSettings) {
-        log("Initializing wiki library...");
+        // log("Initializing wiki library...");
         const { wikiFolder: rootFolder, entryTemplate } = settings;
         if (!rootFolder) {
             error("Root folder not specified, please set it in settings.");
@@ -211,33 +212,45 @@ export class WikiLibrary{
         this.rootFolderPath = rootFolder;
         this.entryTemplate = entryTemplate;
         this.SCCs = {};
+        this.initialized = false;
     }
 
     static async createAsync(app: App, settings: LouisWikiPluginSettings): Promise<WikiLibrary>{
         console.debug("[IN] WikiLibrary.createAsync()")
         const wikiLibrary = new WikiLibrary(app, settings);
-        await wikiLibrary.initialize();
-        log("Wiki library initialized successfully with: \n- "+Object.keys(wikiLibrary.nodes).length+" nodes\n- "+Object.keys(wikiLibrary.SCCs).length+" SCCs\n- "+wikiLibrary.wikiEntries.length+" wiki entries\n- "+wikiLibrary.disambiguationNotes.length+" disambiguation notes\n- "+wikiLibrary.categories.length+" categories\n- "+wikiLibrary.otherTypeNotes.length+" other type notes\n- "+wikiLibrary.notesWithoutFrontmatter.length+" notes without frontmatter\n- "+Object.keys(wikiLibrary.duplicated).length+" duplicated wiki entries\n- "+Object.keys(wikiLibrary.outerTagRefs).length+" outer tag references", 7);
-        console.debug("nodes: "+Object.keys(wikiLibrary.nodes).join(", "));
-        console.debug("SCCs: "+Object.keys(wikiLibrary.SCCs).join(", "));
-        console.debug("wikiEntries: "+wikiLibrary.wikiEntries.map(n=>n.file.path).join(", "));
-        console.debug("disambiguationNotes: "+wikiLibrary.disambiguationNotes.map(n=>n.file.path).join(", "));
-        console.debug("categories: "+wikiLibrary.categories.map(n=>n.file.path).join(", "));
-        console.debug("otherTypeNotes: "+wikiLibrary.otherTypeNotes.map(n=>n.file.path).join(", "));
-        console.debug("notesWithoutFrontmatter: "+wikiLibrary.notesWithoutFrontmatter.map(n=>n.path).join(", "));
-        console.debug("duplicated: "+Object.keys(wikiLibrary.duplicated).join(", "));
-        console.debug("outerTagRefs: "+Object.keys(wikiLibrary.outerTagRefs).join(", "));
+        // await wikiLibrary.initialize(); // deprecated. using lazy initialization instead.
+        // await wikiLibrary.show_state(); // deprecated. using lazy initialization instead.
         console.debug("[OUT] WikiLibrary.createAsync()")
         return wikiLibrary;
     }
 
-    async initialize(): Promise<void> {
+    async lazy_initialize(): Promise<void> {
+        if (this.initialized) return;
+        console.debug("[IN] WikiLibrary.lazy_initialize()")
+        log("Lazy initializing wiki library, please wait...");
         await this.init_folders();
         await this.init_graph();
         console.log("[DEBUG] nodes: \n"+Object.entries(this.nodes).map(([k,v])=>k+" -> "+v.parents.map(p=>p.wiki_tag).join(', ')).join("\n"));
         console.log("[DEBUG] SCCs: \n"+Object.entries(this.SCCs).map(([k,v])=>k+"("+v.nodes.map(n=>n.wiki_tag).join(', ')+") -> "+v.parents.map(p=>p.pseudo_wiki_tag).join(", ")).join("\n"));
         await this.apply_tag_inheritance(true);
+        this.initialized = true;
         await this.report_if_necessary();
+        await this.show_state();
+        console.debug("[OUT] WikiLibrary.lazy_initialize()")
+    }
+
+    async show_state(): Promise<void> {
+        await this.lazy_initialize();
+        log("Wiki library initialized successfully with: \n- "+Object.keys(this.nodes).length+" nodes\n- "+Object.keys(this.SCCs).length+" SCCs\n- "+this.wikiEntries.length+" wiki entries\n- "+this.disambiguationNotes.length+" disambiguation notes\n- "+this.categories.length+" categories\n- "+this.otherTypeNotes.length+" other type notes\n- "+this.notesWithoutFrontmatter.length+" notes without frontmatter\n- "+Object.keys(this.duplicated).length+" duplicated wiki entries\n- "+Object.keys(this.outerTagRefs).length+" outer tag references", 7);
+        console.debug("nodes: "+Object.keys(this.nodes).join(", "));
+        console.debug("SCCs: "+Object.keys(this.SCCs).join(", "));
+        console.debug("wikiEntries: "+this.wikiEntries.map(n=>n.file.path).join(", "));
+        console.debug("disambiguationNotes: "+this.disambiguationNotes.map(n=>n.file.path).join(", "));
+        console.debug("categories: "+this.categories.map(n=>n.file.path).join(", "));
+        console.debug("otherTypeNotes: "+this.otherTypeNotes.map(n=>n.file.path).join(", "));
+        console.debug("notesWithoutFrontmatter: "+this.notesWithoutFrontmatter.map(n=>n.path).join(", "));
+        console.debug("duplicated: "+Object.keys(this.duplicated).join(", "));
+        console.debug("outerTagRefs: "+Object.keys(this.outerTagRefs).join(", "));
     }
 
     async init_folders(): Promise<void> {
@@ -515,6 +528,7 @@ export class WikiLibrary{
     }
 
     async addNewEntry(folder: string|TFolder, title: string, wiki_tag: string, aliases: string[], tags: string[], description: string, titleItems: string[]): Promise<void> {
+        await this.lazy_initialize();
         console.debug("[IN] WikiLibrary.addNewEntry()")
         const similarities = await this.similarityAnalyze(wiki_tag, aliases, titleItems);
         if (similarities.length > 0) {
@@ -729,6 +743,7 @@ export class WikiLibrary{
     }
 
     async similarityAnalyze(wiki_tag: string, aliases: string[], titleEntities: string[]): Promise<SimilarityInfo[]>{
+        await this.lazy_initialize();
         var similarityInfos = Object.values(this.nodes).map((node: Node) => {
             // const metadata = node.frontmatter;
             // if (!metadata) return null;

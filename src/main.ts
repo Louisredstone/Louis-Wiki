@@ -238,7 +238,7 @@ export default class LouisWikiPlugin extends Plugin {
 	}
 
 	async Command_RefreshWikiLibrary(){
-		this.wikiLibrary.initialize();
+		this.wikiLibrary.lazy_initialize();
 	}
 
 	async EditorCommand_InsertZoteroReferenceFromClipboard(){
@@ -277,21 +277,6 @@ class LouisWikiSettingTab extends PluginSettingTab {
 
 		containerEl.empty();
 
-		// new Setting(containerEl)
-		// 	.setName('Wiki Folder')
-		// 	.setDesc('The folder where your wiki entries are stored.')
-		// 	.addText(text => text
-		// 		.setPlaceholder('/path/to/wiki/folder')
-		// 		.setValue(this.plugin.settings.wikiFolder || '')
-		// 		.onChange(async (value) => {
-		// 			if (value !== this.plugin.settings.wikiFolder){
-		// 				this.plugin.settings.wikiFolder = value;
-		// 				if (value !== null && value.trim() !== '')
-		// 					this.plugin.wikiLibrary = await WikiLibrary.createAsync(this.app, this.plugin.settings);
-		// 				await this.plugin.saveSettings();
-		// 			}
-		// 		})
-		// 	);
 		var wikiFolderTextBox: TextComponent;
 		new Setting(containerEl)
 		.setName('Wiki Folder')
@@ -321,6 +306,17 @@ class LouisWikiSettingTab extends PluginSettingTab {
 					this.plugin.settings.debug = !this.plugin.settings.debug;
 					await this.plugin.saveSettings();
 					button.setButtonText(this.plugin.settings.debug ? 'Disable' : 'Enable');
+				})
+			);
+
+		new Setting(containerEl)
+			.setName('Manual initialization')
+			.setDesc('Lazy initialization is enabled. This button allows you to manually initialize the wiki library (if not).')
+			.addButton(button => button
+				.setButtonText(this.plugin.wikiLibrary.initialized? 'Initialized' : 'Initialize')
+				.onClick(async () => {
+					this.plugin.wikiLibrary.lazy_initialize();
+					button.setButtonText(this.plugin.wikiLibrary.initialized? 'Initialized' : 'Initialize');
 				})
 			);
 	}
