@@ -227,7 +227,7 @@ export class WikiLibrary{
     async lazy_initialize(): Promise<void> {
         if (this.initialized) return;
         console.debug("[IN] WikiLibrary.lazy_initialize()")
-        log("Lazy initializing wiki library, please wait...");
+        log("Initializing wiki library, please wait...");
         await this.init_folders();
         await this.init_graph();
         console.log("[DEBUG] nodes: \n"+Object.entries(this.nodes).map(([k,v])=>k+" -> "+v.parents.map(p=>p.wiki_tag).join(', ')).join("\n"));

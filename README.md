@@ -55,3 +55,8 @@ InheritTags are automatically updated when enabling the plugin. You may also man
 - Create a category page.
 - If you created a new folder in WikiFolder, it should be automatically added to WikiLibrary.folders. (Now the plugin just refresh WikiLibrary.folders every time you create a new entry.)
 - Merge nodes of a SCC (Strongly Connected Component).
+
+## Release Note
+
+- 1.0.1: Added lazy initialization mechanism to prevent load failure at the launch of obsidian.
+- 1.0.0: Basic functions.
